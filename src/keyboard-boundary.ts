@@ -1,7 +1,7 @@
 const KEYBOARD_EVENTS = ['keydown', 'keypress', 'keyup'];
 
-export function containKeyboardEvents(host) {
-  function stopKeyboardPropagation(event) {
+export function containKeyboardEvents(host: HTMLElement): void {
+  function stopKeyboardPropagation(event: Event): void {
     event.stopPropagation();
   }
 

@@ -1,6 +1,6 @@
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { EditorState } from '@codemirror/state';
-import { EditorView, drawSelection, keymap } from '@codemirror/view';
+import { drawSelection, EditorView, keymap } from '@codemirror/view';
 import { Vim, vim } from '@replit/codemirror-vim';
 import { containKeyboardEvents } from './keyboard-boundary.js';
 import {
@@ -15,20 +15,39 @@ import {
 } from './target.js';
 
 const TOGGLE_KEY = 'v';
-const sessionState = {
-  enabled: true,
-  session: null,
+type VisibilitySnapshot = {
+  value: string;
+  priority: string;
 };
 
-function isToggleShortcut(event) {
-  return event.altKey
-    && event.shiftKey
-    && !event.ctrlKey
-    && !event.metaKey
-    && event.key.toLowerCase() === TOGGLE_KEY;
+type Session = {
+  target: HTMLTextAreaElement;
+  host: HTMLDivElement;
+  initialText: string;
+  initialSelection: { start: number; end: number };
+  previousVisibility: VisibilitySnapshot;
+  syncing: boolean;
+  closing: boolean;
+  observer: MutationObserver;
+  view: EditorView | null;
+};
+
+const sessionState = {
+  enabled: true,
+  session: null as Session | null,
+};
+
+function isToggleShortcut(event: KeyboardEvent): boolean {
+  return (
+    event.altKey &&
+    event.shiftKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    event.key.toLowerCase() === TOGGLE_KEY
+  );
 }
 
-function isInsideSession(event, session) {
+function isInsideSession(event: Event, session: Session | null): boolean {
   if (!session) {
     return false;
   }
@@ -40,18 +59,18 @@ function isInsideSession(event, session) {
   return event.target === session.host;
 }
 
-function getDocument(element) {
-  return element.ownerDocument || document;
+function getDocument(element: HTMLElement): Document {
+  return element.ownerDocument;
 }
 
-function saveVisibility(element) {
+function saveVisibility(element: HTMLElement): VisibilitySnapshot {
   return {
     value: element.style.getPropertyValue('visibility'),
     priority: element.style.getPropertyPriority('visibility'),
   };
 }
 
-function restoreVisibility(element, previous) {
+function restoreVisibility(element: HTMLElement, previous: VisibilitySnapshot): void {
   if (previous.value) {
     element.style.setProperty('visibility', previous.value, previous.priority);
   } else {
@@ -59,9 +78,9 @@ function restoreVisibility(element, previous) {
   }
 }
 
-function copyTargetAppearance(target, host) {
-  const windowObject = getDocument(target).defaultView || globalThis;
-  if (typeof windowObject.getComputedStyle !== 'function') {
+function copyTargetAppearance(target: HTMLTextAreaElement, host: HTMLDivElement): void {
+  const windowObject = getDocument(target).defaultView;
+  if (!windowObject) {
     return;
   }
 
@@ -73,8 +92,8 @@ function copyTargetAppearance(target, host) {
   host.style.borderRadius = style.borderRadius;
 }
 
-function updateOverlayPosition(session) {
-  if (!session || !session.target.isConnected) {
+function updateOverlayPosition(session: Session | null): void {
+  if (!session?.target.isConnected) {
     return;
   }
 
@@ -85,29 +104,41 @@ function updateOverlayPosition(session) {
   session.host.style.height = `${rectangle.height}px`;
 }
 
-function configureVim() {
+function configureVim(): void {
   Vim.map('jj', '<Esc>', 'insert');
-  const commands = [
-    ['write', 'w', function writeCommand() {
-      if (sessionState.session) {
-        syncViewToTarget(sessionState.session, true);
-      }
-    }],
-    ['wq', 'wq', function writeQuitCommand() {
-      closeSession({ restore: false });
-    }],
-    ['quit', 'q', function quitCommand() {
-      closeSession({ restore: true });
-    }],
+  const commands: Array<[string, string, () => void]> = [
+    [
+      'write',
+      'w',
+      function writeCommand() {
+        if (sessionState.session) {
+          syncViewToTarget(sessionState.session, true);
+        }
+      },
+    ],
+    [
+      'wq',
+      'wq',
+      function writeQuitCommand() {
+        closeSession({ restore: false });
+      },
+    ],
+    [
+      'quit',
+      'q',
+      function quitCommand() {
+        closeSession({ restore: true });
+      },
+    ],
   ];
 
-  for (const command of commands) {
-    Vim.defineEx(command[0], command[1], command[2]);
+  for (const [name, shortName, handler] of commands) {
+    Vim.defineEx(name, shortName, handler);
   }
 }
 
-function dispatchEditorText(session, text, shouldDispatchInput) {
-  if (!session.target.isConnected) {
+function dispatchEditorText(session: Session, text: string, shouldDispatchInput: boolean): void {
+  if (!session.target.isConnected || !session.view) {
     return;
   }
 
@@ -127,8 +158,8 @@ function dispatchEditorText(session, text, shouldDispatchInput) {
   }
 }
 
-function syncViewToTarget(session, shouldDispatchInput) {
-  if (!session || !session.view) {
+function syncViewToTarget(session: Session | null, shouldDispatchInput: boolean): void {
+  if (!session?.view) {
     return;
   }
 
@@ -137,7 +168,7 @@ function syncViewToTarget(session, shouldDispatchInput) {
   dispatchEditorText(session, text, shouldDispatchInput && currentText !== text);
 }
 
-function restoreInitialTarget(session) {
+function restoreInitialTarget(session: Session): void {
   if (!session.target.isConnected) {
     return;
   }
@@ -146,7 +177,11 @@ function restoreInitialTarget(session) {
   session.syncing = true;
   try {
     writeNativeValue(session.target, session.initialText);
-    setTargetSelection(session.target, session.initialSelection.start, session.initialSelection.end);
+    setTargetSelection(
+      session.target,
+      session.initialSelection.start,
+      session.initialSelection.end,
+    );
     if (currentText !== session.initialText) {
       dispatchTargetInput(session.target);
     }
@@ -155,7 +190,7 @@ function restoreInitialTarget(session) {
   }
 }
 
-function closeSession(options = {}) {
+function closeSession(options: { restore?: boolean } = {}): void {
   const session = sessionState.session;
   if (!session || session.closing) {
     return;
@@ -169,7 +204,7 @@ function closeSession(options = {}) {
   }
 
   session.observer.disconnect();
-  session.view.destroy();
+  session.view?.destroy();
   session.host.remove();
   if (session.target.isConnected) {
     restoreVisibility(session.target, session.previousVisibility);
@@ -178,7 +213,11 @@ function closeSession(options = {}) {
   sessionState.session = null;
 }
 
-function makeOverlay(target) {
+function makeOverlay(target: HTMLTextAreaElement): {
+  host: HTMLDivElement;
+  shadow: ShadowRoot;
+  mount: HTMLDivElement;
+} {
   const documentObject = getDocument(target);
   const host = documentObject.createElement('div');
   host.setAttribute('aria-label', 'TextareaVim editor');
@@ -201,16 +240,20 @@ function makeOverlay(target) {
     .cm-line { padding: 0; }
   </style><div id="mount"></div>`;
   documentObject.documentElement.appendChild(host);
-  return { host, shadow, mount: shadow.querySelector('#mount') };
+  const mount = shadow.querySelector<HTMLDivElement>('#mount');
+  if (!mount) {
+    throw new Error('CodeMirror mount element was not created');
+  }
+  return { host, shadow, mount };
 }
 
-function activate(target) {
+function activate(target: HTMLTextAreaElement | null): void {
   if (!sessionState.enabled || !target || !isSupportedTarget(target)) {
     return;
   }
 
   if (sessionState.session && sessionState.session.target === target) {
-    sessionState.session.view.focus();
+    sessionState.session.view?.focus();
     return;
   }
   if (sessionState.session) {
@@ -221,7 +264,7 @@ function activate(target) {
   const initialSelection = readTargetSelection(target, initialText);
   const overlay = makeOverlay(target);
   const previousVisibility = saveVisibility(target);
-  const session = {
+  const session: Session = {
     target,
     host: overlay.host,
     initialText,
@@ -258,13 +301,14 @@ function activate(target) {
     selection: { anchor: initialSelection.start, head: initialSelection.end },
     extensions,
   });
-  session.view = new EditorView({ state, parent: overlay.mount, root: overlay.shadow });
+  const view = new EditorView({ state, parent: overlay.mount, root: overlay.shadow });
+  session.view = view;
   sessionState.session = session;
   updateOverlayPosition(session);
-  session.view.focus();
+  view.focus();
 }
 
-function handleFocusIn(event) {
+function handleFocusIn(event: FocusEvent): void {
   const session = sessionState.session;
   if (session && !isInsideSession(event, session) && event.target !== session.target) {
     closeSession({ restore: false });
@@ -276,23 +320,26 @@ function handleFocusIn(event) {
   }
 }
 
-function handleTargetInput(event) {
+function handleTargetInput(event: Event): void {
   const session = sessionState.session;
-  if (!session || session.syncing || event.target !== session.target) {
+  const view = session?.view;
+  if (!session || !view || session.syncing || event.target !== session.target) {
     return;
   }
 
   const text = readTargetText(session.target);
-  if (text !== session.view.state.doc.toString()) {
-    session.view.dispatch({
-      changes: { from: 0, to: session.view.state.doc.length, insert: text },
+  if (text !== view.state.doc.toString()) {
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: text },
     });
   }
 }
 
-function handleKeydown(event) {
+function handleKeydown(event: KeyboardEvent): void {
   if (!event.isComposing && isToggleShortcut(event)) {
-    const target = sessionState.session ? sessionState.session.target : findTarget(document.activeElement);
+    const target = sessionState.session
+      ? sessionState.session.target
+      : findTarget(document.activeElement);
     sessionState.enabled = !sessionState.enabled;
     if (sessionState.enabled) {
       activate(target || findTarget(document.activeElement));
@@ -316,13 +363,13 @@ function handleKeydown(event) {
   }
 }
 
-function handlePointerDown(event) {
+function handlePointerDown(event: PointerEvent): void {
   if (sessionState.session && !isInsideSession(event, sessionState.session)) {
     closeSession({ restore: false });
   }
 }
 
-function handleScrollOrResize() {
+function handleScrollOrResize(): void {
   const session = sessionState.session;
   if (!session) {
     return;
@@ -334,10 +381,12 @@ function handleScrollOrResize() {
   updateOverlayPosition(session);
 }
 
-configureVim();
-document.addEventListener('focusin', handleFocusIn, true);
-document.addEventListener('input', handleTargetInput, true);
-document.addEventListener('keydown', handleKeydown, true);
-document.addEventListener('pointerdown', handlePointerDown, true);
-window.addEventListener('scroll', handleScrollOrResize, true);
-window.addEventListener('resize', handleScrollOrResize);
+export function initializeTextareaVim(): void {
+  configureVim();
+  document.addEventListener('focusin', handleFocusIn, true);
+  document.addEventListener('input', handleTargetInput, true);
+  document.addEventListener('keydown', handleKeydown, true);
+  document.addEventListener('pointerdown', handlePointerDown, true);
+  window.addEventListener('scroll', handleScrollOrResize, true);
+  window.addEventListener('resize', handleScrollOrResize);
+}

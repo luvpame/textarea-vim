@@ -1,17 +1,39 @@
 {
   "name": "textarea-vim",
   "private": true,
+  "version": "0.4.0",
   "type": "module",
+  "engines": {
+    "node": ">=24",
+    "npm": ">=10"
+  },
   "scripts": {
-    "build": "esbuild src/content.js --bundle --format=iife --platform=browser --target=es2020 --minify --legal-comments=none --outfile=extension/content.js",
-    "test": "node --test test/*.test.js",
-    "check": "npm run build && npm test && node --check extension/content.js && node scripts/check-bundle.mjs && node -e \"JSON.parse(require('fs').readFileSync('extension/manifest.json', 'utf8'))\""
+    "dev": "wxt",
+    "build": "wxt build --mv3 --mode production",
+    "zip": "wxt zip",
+    "prepare": "wxt prepare",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "typecheck": "wxt prepare && tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "npm run build && node scripts/check-e2e-env.mjs && playwright test",
+    "check:bundle": "node scripts/check-bundle.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build && npm run check:bundle"
   },
   "dependencies": {
     "@replit/codemirror-vim": "^6.4.0",
     "codemirror": "^6.0.2"
   },
   "devDependencies": {
-    "esbuild": "^0.28.2"
+    "@biomejs/biome": "^2.5.9",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "jsdom": "^27.0.0",
+    "playwright": "^1.62.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
+    "wxt": "^0.21.4"
   }
 }

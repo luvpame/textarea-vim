@@ -1,17 +1,84 @@
-import { readFile } from 'node:fs/promises';
+import { access, readdir, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const bundle = await readFile(new URL('../extension/content.js', import.meta.url), 'utf8');
-const withoutSvgNamespace = bundle.replaceAll('http://www.w3.org/2000/svg', '');
+const outputPath = process.env.WXT_OUTPUT_DIR
+  ? path.resolve(process.env.WXT_OUTPUT_DIR)
+  : fileURLToPath(new URL('../.output/chrome-mv3/', import.meta.url));
+
+try {
+  await access(path.join(outputPath, 'manifest.json'));
+} catch {
+  throw new Error(
+    `WXTのChrome MV3出力がありません: ${outputPath}。先に npm run build を実行してください`,
+  );
+}
+
+const manifest = JSON.parse(await readFile(path.join(outputPath, 'manifest.json'), 'utf8'));
+if (manifest.manifest_version !== 3) {
+  throw new Error(
+    `Chrome MV3 manifestではありません: manifest_version=${manifest.manifest_version}`,
+  );
+}
+if (!Array.isArray(manifest.content_scripts) || manifest.content_scripts.length === 0) {
+  throw new Error('生成manifestにcontent_scriptsがありません');
+}
+
+async function listJavaScriptFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = await Promise.all(
+    entries.map(async function visit(entry) {
+      const entryPath = path.join(directory, entry.name);
+      return entry.isDirectory() ? listJavaScriptFiles(entryPath) : [entryPath];
+    }),
+  );
+  return files.flat().filter(function isJavaScript(file) {
+    return file.endsWith('.js');
+  });
+}
+
 const checks = [
   [/\beval\s*\(/, 'eval'],
   [/\bnew\s+Function\b/, 'new Function'],
   [/\bhttps?:\/\//, 'remote URL'],
 ];
 
-for (const [pattern, label] of checks) {
-  if (pattern.test(label === 'remote URL' ? withoutSvgNamespace : bundle)) {
-    throw new Error(`禁止された${label}参照が生成バンドルにあります`);
+function findUnicodeNoncharacter(source) {
+  for (const character of source) {
+    const codePoint = character.codePointAt(0);
+    if (
+      codePoint !== undefined &&
+      ((codePoint >= 0xfdd0 && codePoint <= 0xfdef) || (codePoint & 0xffff) >= 0xfffe)
+    ) {
+      return codePoint;
+    }
+  }
+  return null;
+}
+
+const bundleFiles = await listJavaScriptFiles(outputPath);
+if (bundleFiles.length === 0) {
+  throw new Error(`生成出力にJavaScriptバンドルがありません: ${outputPath}`);
+}
+for (const bundleFile of bundleFiles) {
+  const bundle = await readFile(bundleFile, 'utf8');
+  const noncharacter = findUnicodeNoncharacter(bundle);
+  if (noncharacter !== null) {
+    throw new Error(
+      `${path.relative(outputPath, bundleFile)}にChromeが拒否するUnicode非文字U+${noncharacter
+        .toString(16)
+        .toUpperCase()}があります`,
+    );
+  }
+  const withoutSvgNamespace = bundle.replaceAll('http://www.w3.org/2000/svg', '');
+  for (const [pattern, label] of checks) {
+    const source = label === 'remote URL' ? withoutSvgNamespace : bundle;
+    if (pattern.test(source)) {
+      throw new Error(`${path.relative(outputPath, bundleFile)}に禁止された${label}参照があります`);
+    }
   }
 }
 
-console.log('bundle scan: no eval, new Function, or remote URL reference');
+console.log(
+  `bundle scan: ${bundleFiles.length} files contain no executable strings, remote URLs, or Unicode noncharacters`,
+);
