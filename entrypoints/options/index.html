@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TextareaVim 設定</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main>
+      <h1>TextareaVim 設定</h1>
+      <form id="settings-form">
+        <label for="insert-exit-key-sequence">INSERTを抜けるキー列</label>
+        <input
+          id="insert-exit-key-sequence"
+          name="insert-exit-key-sequence"
+          type="text"
+          maxlength="16"
+          autocomplete="off"
+          spellcheck="false"
+          aria-describedby="insert-exit-key-sequence-help"
+        />
+        <p id="insert-exit-key-sequence-help">
+          INSERTモード中に入力するキー列です。空欄にすると追加マッピングを無効にします。Escは常に使えます。
+        </p>
+        <div class="actions">
+          <button type="submit">保存</button>
+          <button id="reset-settings" type="button">既定値に戻す</button>
+        </div>
+        <p id="settings-status" role="status" aria-live="polite"></p>
+      </form>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

@@ -1,8 +1,13 @@
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { EditorState } from '@codemirror/state';
-import { drawSelection, EditorView, keymap } from '@codemirror/view';
+import { drawSelection, EditorView, keymap, placeholder } from '@codemirror/view';
 import { Vim, vim } from '@replit/codemirror-vim';
 import { containKeyboardEvents } from './keyboard-boundary.js';
+import {
+  DEFAULT_INSERT_EXIT_KEY_SEQUENCE,
+  readInsertExitKeySequence,
+  watchInsertExitKeySequence,
+} from './settings.js';
 import {
   dispatchTargetChange,
   dispatchTargetInput,
@@ -18,6 +23,13 @@ const TOGGLE_KEY = 'v';
 type VisibilitySnapshot = {
   value: string;
   priority: string;
+};
+
+type TargetPadding = {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
 };
 
 type Session = {
@@ -36,6 +48,9 @@ const sessionState = {
   enabled: true,
   session: null as Session | null,
 };
+
+let configuredInsertExitKeySequence: string | null = null;
+let stopWatchingInsertExitKeySequence: (() => void) | null = null;
 
 function isToggleShortcut(event: KeyboardEvent): boolean {
   return (
@@ -78,6 +93,26 @@ function restoreVisibility(element: HTMLElement, previous: VisibilitySnapshot): 
   }
 }
 
+function parseCssPixels(value: string): number {
+  const pixels = Number.parseFloat(value);
+  return Number.isFinite(pixels) ? pixels : 0;
+}
+
+function readTargetPadding(target: HTMLTextAreaElement): TargetPadding {
+  const windowObject = getDocument(target).defaultView;
+  if (!windowObject) {
+    return { top: 0, right: 0, bottom: 0, left: 0 };
+  }
+
+  const style = windowObject.getComputedStyle(target);
+  return {
+    top: parseCssPixels(style.paddingTop),
+    right: parseCssPixels(style.paddingRight),
+    bottom: parseCssPixels(style.paddingBottom),
+    left: parseCssPixels(style.paddingLeft),
+  };
+}
+
 function copyTargetAppearance(target: HTMLTextAreaElement, host: HTMLDivElement): void {
   const windowObject = getDocument(target).defaultView;
   if (!windowObject) {
@@ -86,6 +121,7 @@ function copyTargetAppearance(target: HTMLTextAreaElement, host: HTMLDivElement)
 
   const style = windowObject.getComputedStyle(target);
   host.style.font = style.font;
+  host.style.lineHeight = style.lineHeight;
   host.style.color = style.color;
   host.style.background = style.background;
   host.style.border = style.border;
@@ -104,8 +140,33 @@ function updateOverlayPosition(session: Session | null): void {
   session.host.style.height = `${rectangle.height}px`;
 }
 
-function configureVim(): void {
-  Vim.map('jj', '<Esc>', 'insert');
+function applyInsertExitKeySequence(keySequence: string): void {
+  if (configuredInsertExitKeySequence) {
+    Vim.unmap(configuredInsertExitKeySequence, 'insert');
+  }
+
+  configuredInsertExitKeySequence = keySequence;
+  if (keySequence) {
+    Vim.map(keySequence, '<Esc>', 'insert');
+  }
+}
+
+async function configureVim(): Promise<void> {
+  let insertExitKeySequence = DEFAULT_INSERT_EXIT_KEY_SEQUENCE;
+  try {
+    insertExitKeySequence = await readInsertExitKeySequence();
+  } catch {
+    // Keep the default mapping when extension storage is temporarily unavailable.
+  }
+  applyInsertExitKeySequence(insertExitKeySequence);
+
+  stopWatchingInsertExitKeySequence?.();
+  try {
+    stopWatchingInsertExitKeySequence = watchInsertExitKeySequence(applyInsertExitKeySequence);
+  } catch {
+    stopWatchingInsertExitKeySequence = null;
+  }
+
   const commands: Array<[string, string, () => void]> = [
     [
       'write',
@@ -262,6 +323,8 @@ function activate(target: HTMLTextAreaElement | null): void {
 
   const initialText = readTargetText(target);
   const initialSelection = readTargetSelection(target, initialText);
+  const targetPadding = readTargetPadding(target);
+  const placeholderText = target.getAttribute('placeholder');
   const overlay = makeOverlay(target);
   const previousVisibility = saveVisibility(target);
   const session: Session = {
@@ -280,9 +343,15 @@ function activate(target: HTMLTextAreaElement | null): void {
     view: null,
   };
 
-  target.style.setProperty('visibility', 'hidden', '');
+  target.style.setProperty('visibility', 'hidden', 'important');
   session.observer.observe(getDocument(target).documentElement, { childList: true, subtree: true });
   const extensions = [
+    EditorView.theme({
+      '.cm-content': {
+        padding: `${targetPadding.top}px ${targetPadding.right}px ${targetPadding.bottom}px ${targetPadding.left}px`,
+      },
+      '.cm-line': { padding: '0' },
+    }),
     vim({ status: true }),
     history(),
     drawSelection(),
@@ -296,6 +365,9 @@ function activate(target: HTMLTextAreaElement | null): void {
       syncViewToTarget(session, update.docChanged);
     }),
   ];
+  if (placeholderText) {
+    extensions.push(placeholder(placeholderText));
+  }
   const state = EditorState.create({
     doc: initialText,
     selection: { anchor: initialSelection.start, head: initialSelection.end },
@@ -381,8 +453,8 @@ function handleScrollOrResize(): void {
   updateOverlayPosition(session);
 }
 
-export function initializeTextareaVim(): void {
-  configureVim();
+export async function initializeTextareaVim(): Promise<void> {
+  await configureVim();
   document.addEventListener('focusin', handleFocusIn, true);
   document.addEventListener('input', handleTargetInput, true);
   document.addEventListener('keydown', handleKeydown, true);
