@@ -3,8 +3,8 @@ import { defineConfig } from 'wxt';
 export default defineConfig({
   manifest: {
     name: 'TextareaVim',
-    version: '0.4.0',
-    description: 'ブラウザの入力欄をCodeMirror上のVim操作で編集する拡張機能',
+    version: '1.0.0',
+    description: 'Webページの複数行入力欄をCodeMirror上のVim操作で編集する拡張機能',
     permissions: ['storage'],
     icons: {
       '16': 'icons/16.png',

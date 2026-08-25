@@ -1,7 +1,10 @@
 # TextareaVim
 
 Chromium系ブラウザの複数行`textarea`を、ブラウザ内のCodeMirror 6でVim操作できるようにするManifest V3拡張です。
-外部Neovim、Native Messaging、通信、OSクリップボード権限は使いません。
+外部Neovim、Native Messaging、拡張機能自身による外部通信、OSクリップボード権限は使いません。
+有効設定とURL設定だけは、Chromeの同期ストレージへ保存します。
+
+[プライバシーポリシー](./PRIVACY.md)
 
 ## 技術構成
 
@@ -39,6 +42,8 @@ Chromeの拡張機能管理画面でデベロッパーモードを有効にし�
 ```sh
 npm run zip
 ```
+
+Chrome Web Storeへ提出するときに使う掲載文と審査手順は、[Chrome Web Store掲載情報](./docs/chrome-web-store-listing.md)にまとめています。
 
 ## 検査
 
