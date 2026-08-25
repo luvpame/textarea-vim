@@ -77,7 +77,8 @@ body {
 }
 
 .intro,
-.settings-section-intro {
+.settings-section-intro,
+.support-section-intro {
   color: var(--settings-muted);
   font-size: 0.875rem;
   line-height: 1.6;
@@ -92,7 +93,8 @@ body {
   padding-block-start: 2rem;
 }
 
-.settings-section h2 {
+.settings-section h2,
+.support-section h2 {
   margin: 0;
   color: var(--settings-text);
   font-size: 1.125rem;
@@ -102,6 +104,33 @@ body {
 
 .settings-section-intro {
   margin: 0.35rem 0 0;
+}
+
+.support-section {
+  margin-block-start: 2.5rem;
+  padding-block-start: 2rem;
+  border-block-start: 1px solid var(--settings-border);
+}
+
+.support-section-intro {
+  margin: 0.35rem 0 1rem;
+}
+
+.support-link {
+  display: inline-flex;
+  max-inline-size: 100%;
+  border-radius: 0.25rem;
+}
+
+.support-link:focus-visible {
+  outline: 2px solid var(--settings-text);
+  outline-offset: 0.25rem;
+}
+
+.support-link img {
+  display: block;
+  inline-size: min(217px, 100%);
+  block-size: auto;
 }
 
 .page-footer {
