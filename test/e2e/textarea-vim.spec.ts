@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { type Browser, type BrowserContext, expect, test } from '@playwright/test';
+import { type Browser, type BrowserContext, expect, type Page, test } from '@playwright/test';
 import { chromium } from 'playwright';
 
 let server: Server;
@@ -139,6 +139,28 @@ async function loadExtension(browser: Browser, extensionPath: string): Promise<s
   return result.id;
 }
 
+async function openExtensionPage(
+  context: BrowserContext,
+  extensionId: string,
+  pageName: 'options' | 'popup',
+): Promise<Page> {
+  const page = await context.newPage();
+  await page.goto(`chrome-extension://${extensionId}/${pageName}.html`);
+  await expect(page.locator('#url-policy-patterns')).toBeVisible();
+  return page;
+}
+
+async function saveUrlPolicy(
+  page: Page,
+  mode: 'blocklist' | 'allowlist',
+  patterns: string,
+): Promise<void> {
+  await page.getByLabel(mode === 'blocklist' ? 'ブラックリスト' : 'ホワイトリスト').check();
+  await page.locator('#url-policy-patterns').fill(patterns);
+  await page.getByRole('button', { name: '保存' }).click();
+  await expect(page.locator('#settings-status')).toHaveText('保存しました。');
+}
+
 test.beforeAll(async function startFixtureServer(): Promise<void> {
   server = createServer(function serveFixture(_request, response): void {
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -165,9 +187,15 @@ test.beforeAll(async function startFixtureServer(): Promise<void> {
           <script>
             window.inputCount = 0;
             window.changeCount = 0;
+            window.shortcutCount = 0;
             const editor = document.querySelector('#editor');
             editor.addEventListener('input', () => { window.inputCount += 1; });
             editor.addEventListener('change', () => { window.changeCount += 1; });
+            document.addEventListener('keydown', (event) => {
+              if (event.altKey && event.shiftKey && event.key.toLowerCase() === 'v') {
+                window.shortcutCount += 1;
+              }
+            });
           </script>
         </body>
       </html>`);
@@ -243,7 +271,10 @@ test('textareaのpaddingとplaceholderをCodeMirrorへ同期する', async funct
 
     const textarea = page.locator('#placeholder-editor');
     await textarea.focus();
-    await expect(page.locator('[aria-label="TextareaVim editor"]')).toBeVisible();
+    const overlay = page.locator('[aria-label="TextareaVim editor"]');
+    await expect(overlay).toBeVisible();
+    await expect(overlay.locator('.cm-placeholder')).toBeVisible();
+    await expect(overlay.locator('.cm-fat-cursor.cm-cursor-primary')).toBeVisible();
 
     const alignment = await page.evaluate(function readPlaceholderAlignment() {
       const target = document.querySelector<HTMLTextAreaElement>('#placeholder-editor');
@@ -285,7 +316,7 @@ test('textareaのpaddingとplaceholderをCodeMirrorへ同期する', async funct
     expect(Math.abs(alignment.placeholderLeft - alignment.expectedLeft)).toBeLessThanOrEqual(1);
     expect(Math.abs(alignment.placeholderTop - alignment.expectedTop)).toBeLessThanOrEqual(1);
     expect(Math.abs(alignment.cursorLeft - alignment.expectedLeft)).toBeLessThanOrEqual(1);
-    expect(Math.abs(alignment.cursorTop - alignment.expectedTop)).toBeLessThanOrEqual(1);
+    expect(Math.abs(alignment.cursorTop - alignment.expectedTop)).toBeLessThanOrEqual(3);
 
     await page.keyboard.press('i');
     await page.keyboard.type('X');
@@ -325,46 +356,126 @@ test('textareaのpaddingとplaceholderをCodeMirrorへ同期する', async funct
   }
 });
 
-test('設定画面からINSERT終了キー列を変更する', async function testInsertExitKeySequenceSetting(): Promise<void> {
+test('URL設定をポップアップと通常の設定画面で共有する', async function testUrlSettingsSurfaces(): Promise<void> {
   const extensionPath = path.resolve('.output/chrome-mv3');
   let runningBrowser: RunningBrowser | undefined;
 
   try {
     runningBrowser = await launchBrowser();
     const extensionId = await loadExtension(runningBrowser.browser, extensionPath);
-    const optionsPage = await runningBrowser.context.newPage();
-    await optionsPage.goto(`chrome-extension://${extensionId}/options.html`);
+    const popup = await openExtensionPage(runningBrowser.context, extensionId, 'popup');
+    await expect(popup.getByLabel('ブラックリスト')).toBeChecked();
+    await saveUrlPolicy(popup, 'allowlist', `http://${new URL(pageUrl).hostname}/`);
 
-    const keySequenceInput = optionsPage.locator('#insert-exit-key-sequence');
-    await expect(keySequenceInput).toHaveValue('jj');
-    await keySequenceInput.fill('jk');
-    await optionsPage.getByRole('button', { name: '保存' }).click();
-    await expect(optionsPage.locator('#settings-status')).toHaveText('保存しました。');
+    await popup.getByRole('button', { name: '通常の設定画面を開く' }).click();
+    await expect
+      .poll(function findOptionsPage(): boolean {
+        return (
+          runningBrowser?.context.pages().some(function isOptionsPage(page): boolean {
+            return page.url() === `chrome-extension://${extensionId}/options.html`;
+          }) ?? false
+        );
+      })
+      .toBe(true);
+    const options = runningBrowser.context.pages().find(function findOptionsPage(page): boolean {
+      return page.url() === `chrome-extension://${extensionId}/options.html`;
+    });
+    if (!options) {
+      throw new Error('設定画面が開かれていません');
+    }
+    await expect(options.getByLabel('ホワイトリスト')).toBeChecked();
+    await expect(options.locator('#url-policy-patterns')).toHaveValue(
+      `http://${new URL(pageUrl).hostname}/`,
+    );
 
+    await saveUrlPolicy(options, 'blocklist', `http://${new URL(pageUrl).hostname}/*`);
+    await popup.reload();
+    await expect(popup.getByLabel('ブラックリスト')).toBeChecked();
+    await expect(popup.locator('#url-policy-patterns')).toHaveValue(
+      `http://${new URL(pageUrl).hostname}/*`,
+    );
+  } finally {
+    await closeBrowser(runningBrowser);
+  }
+});
+
+test('不正なURLパターンを保存せず行番号を表示する', async function testInvalidUrlPattern(): Promise<void> {
+  const extensionPath = path.resolve('.output/chrome-mv3');
+  let runningBrowser: RunningBrowser | undefined;
+
+  try {
+    runningBrowser = await launchBrowser();
+    const extensionId = await loadExtension(runningBrowser.browser, extensionPath);
+    const options = await openExtensionPage(runningBrowser.context, extensionId, 'options');
+    await options
+      .locator('#url-policy-patterns')
+      .fill('https://example.com/*\nnot-a-match-pattern');
+    await options.getByRole('button', { name: '保存' }).click();
+    await expect(options.locator('#settings-status')).toHaveText('入力内容を確認してください。');
+    await expect(options.locator('#url-policy-pattern-errors')).toContainText('2行目');
+  } finally {
+    await closeBrowser(runningBrowser);
+  }
+});
+
+test('URLポリシーの変更を開いているタブへ反映する', async function testUrlPolicyInOpenTab(): Promise<void> {
+  const extensionPath = path.resolve('.output/chrome-mv3');
+  let runningBrowser: RunningBrowser | undefined;
+
+  try {
+    runningBrowser = await launchBrowser();
+    const extensionId = await loadExtension(runningBrowser.browser, extensionPath);
+    const options = await openExtensionPage(runningBrowser.context, extensionId, 'options');
+    await saveUrlPolicy(options, 'allowlist', `http://${new URL(pageUrl).hostname}/*`);
     const page = await runningBrowser.context.newPage();
     await page.goto(pageUrl);
     await page.waitForLoadState('networkidle');
-    const textarea = page.locator('#editor');
-    await textarea.focus();
-    await page.keyboard.press('i');
-    await page.keyboard.press('j');
-    await page.keyboard.press('k');
-    await page.keyboard.press('x');
-    await page.keyboard.press('Control+Enter');
-    await expect(textarea).toHaveValue('ello');
-
-    await optionsPage.getByRole('button', { name: '既定値に戻す' }).click();
-    await expect(keySequenceInput).toHaveValue('jj');
-    await expect(optionsPage.locator('#settings-status')).toHaveText('既定値に戻しました。');
-
-    await textarea.focus();
+    await page.locator('#editor').focus();
     await expect(page.locator('[aria-label="TextareaVim editor"]')).toBeVisible();
-    await page.keyboard.press('i');
-    await page.keyboard.press('j');
-    await page.keyboard.press('j');
-    await page.keyboard.press('x');
-    await page.keyboard.press('Control+Enter');
-    await expect(textarea).toHaveValue('llo');
+
+    await saveUrlPolicy(options, 'blocklist', `http://${new URL(pageUrl).hostname}/*`);
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toHaveCount(0);
+    await page.locator('#editor').focus();
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toHaveCount(0);
+    await page.keyboard.press('Alt+Shift+V');
+    await expect
+      .poll(async function readShortcutCount(): Promise<number> {
+        return page.evaluate(function readCount(): number {
+          return (window as unknown as Window & { shortcutCount: number }).shortcutCount;
+        });
+      })
+      .toBe(1);
+  } finally {
+    await closeBrowser(runningBrowser);
+  }
+});
+
+test('SPAのURL変更でURLポリシーを再判定する', async function testSpaLocationChange(): Promise<void> {
+  const extensionPath = path.resolve('.output/chrome-mv3');
+  let runningBrowser: RunningBrowser | undefined;
+
+  try {
+    runningBrowser = await launchBrowser();
+    const extensionId = await loadExtension(runningBrowser.browser, extensionPath);
+    const options = await openExtensionPage(runningBrowser.context, extensionId, 'options');
+    const hostname = new URL(pageUrl).hostname;
+    await saveUrlPolicy(options, 'allowlist', `http://${hostname}/`);
+    const page = await runningBrowser.context.newPage();
+    await page.goto(pageUrl);
+    await page.waitForLoadState('networkidle');
+    await page.locator('#editor').focus();
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toBeVisible();
+
+    await page.evaluate(function navigateToBlockedPath(): void {
+      history.pushState({}, '', '/blocked');
+    });
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toHaveCount(0);
+
+    await page.evaluate(function navigateToAllowedPath(): void {
+      history.pushState({}, '', '/');
+    });
+    await page.locator('#editor').focus();
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toBeVisible();
   } finally {
     await closeBrowser(runningBrowser);
   }

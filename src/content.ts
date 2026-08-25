@@ -2,17 +2,13 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { EditorState } from '@codemirror/state';
 import { drawSelection, EditorView, keymap, placeholder } from '@codemirror/view';
 import { Vim, vim } from '@replit/codemirror-vim';
+import type { ContentScriptContext, WxtWindowEventMap } from 'wxt/utils/content-script-context';
 import { containKeyboardEvents } from './keyboard-boundary.js';
 import {
   dispatchTargetInputAndUpdateOverlay,
   observeOverlayPosition,
   updateOverlayPosition,
 } from './overlay-position.js';
-import {
-  DEFAULT_INSERT_EXIT_KEY_SEQUENCE,
-  readInsertExitKeySequence,
-  watchInsertExitKeySequence,
-} from './settings.js';
 import {
   dispatchTargetChange,
   dispatchTargetInput,
@@ -23,6 +19,8 @@ import {
   setTargetSelection,
   writeNativeValue,
 } from './target.js';
+import { DEFAULT_URL_POLICY, isUrlAllowed, type UrlPolicy } from './url-policy.js';
+import { readUrlPolicy, watchUrlPolicy } from './url-settings.js';
 
 const TOGGLE_KEY = 'v';
 type VisibilitySnapshot = {
@@ -52,11 +50,12 @@ type Session = {
 
 const sessionState = {
   enabled: true,
+  urlAllowed: true,
+  urlPolicy: DEFAULT_URL_POLICY,
   session: null as Session | null,
 };
 
-let configuredInsertExitKeySequence: string | null = null;
-let stopWatchingInsertExitKeySequence: (() => void) | null = null;
+let stopWatchingUrlPolicy: (() => void) | null = null;
 
 function isToggleShortcut(event: KeyboardEvent): boolean {
   return (
@@ -134,32 +133,8 @@ function copyTargetAppearance(target: HTMLTextAreaElement, host: HTMLDivElement)
   host.style.borderRadius = style.borderRadius;
 }
 
-function applyInsertExitKeySequence(keySequence: string): void {
-  if (configuredInsertExitKeySequence) {
-    Vim.unmap(configuredInsertExitKeySequence, 'insert');
-  }
-
-  configuredInsertExitKeySequence = keySequence;
-  if (keySequence) {
-    Vim.map(keySequence, '<Esc>', 'insert');
-  }
-}
-
-async function configureVim(): Promise<void> {
-  let insertExitKeySequence = DEFAULT_INSERT_EXIT_KEY_SEQUENCE;
-  try {
-    insertExitKeySequence = await readInsertExitKeySequence();
-  } catch {
-    // Keep the default mapping when extension storage is temporarily unavailable.
-  }
-  applyInsertExitKeySequence(insertExitKeySequence);
-
-  stopWatchingInsertExitKeySequence?.();
-  try {
-    stopWatchingInsertExitKeySequence = watchInsertExitKeySequence(applyInsertExitKeySequence);
-  } catch {
-    stopWatchingInsertExitKeySequence = null;
-  }
+function configureVim(): void {
+  Vim.map('jj', '<Esc>', 'insert');
 
   const commands: Array<[string, string, () => void]> = [
     [
@@ -190,6 +165,19 @@ async function configureVim(): Promise<void> {
   for (const [name, shortName, handler] of commands) {
     Vim.defineEx(name, shortName, handler);
   }
+}
+
+function applyUrlPolicy(policy: UrlPolicy, url: string | URL = window.location.href): void {
+  const allowed = isUrlAllowed(policy, url);
+  sessionState.urlPolicy = policy;
+  if (!allowed && sessionState.urlAllowed) {
+    closeSession({ restore: false });
+  }
+  sessionState.urlAllowed = allowed;
+}
+
+function handleLocationChange(event: WxtWindowEventMap['wxt:locationchange']): void {
+  applyUrlPolicy(sessionState.urlPolicy, event.newUrl);
 }
 
 function dispatchEditorText(session: Session, text: string, shouldDispatchInput: boolean): void {
@@ -304,7 +292,7 @@ function makeOverlay(target: HTMLTextAreaElement): {
 }
 
 function activate(target: HTMLTextAreaElement | null): void {
-  if (!sessionState.enabled || !target || !isSupportedTarget(target)) {
+  if (!sessionState.enabled || !sessionState.urlAllowed || !target || !isSupportedTarget(target)) {
     return;
   }
 
@@ -407,7 +395,7 @@ function handleTargetInput(event: Event): void {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
-  if (!event.isComposing && isToggleShortcut(event)) {
+  if (sessionState.urlAllowed && !event.isComposing && isToggleShortcut(event)) {
     const target = sessionState.session
       ? sessionState.session.target
       : findTarget(document.activeElement);
@@ -452,12 +440,32 @@ function handleScrollOrResize(): void {
   updateOverlayPosition(session.target, session.host);
 }
 
-export async function initializeTextareaVim(): Promise<void> {
-  await configureVim();
-  document.addEventListener('focusin', handleFocusIn, true);
-  document.addEventListener('input', handleTargetInput, true);
-  document.addEventListener('keydown', handleKeydown, true);
-  document.addEventListener('pointerdown', handlePointerDown, true);
-  window.addEventListener('scroll', handleScrollOrResize, true);
-  window.addEventListener('resize', handleScrollOrResize);
+export async function initializeTextareaVim(context: ContentScriptContext): Promise<void> {
+  configureVim();
+  try {
+    applyUrlPolicy(await readUrlPolicy());
+  } catch {
+    applyUrlPolicy({ ...DEFAULT_URL_POLICY });
+  }
+
+  stopWatchingUrlPolicy?.();
+  try {
+    stopWatchingUrlPolicy = watchUrlPolicy(applyUrlPolicy);
+    const unwatchUrlPolicy = stopWatchingUrlPolicy;
+    context.onInvalidated(function stopUrlPolicyWatcher(): void {
+      unwatchUrlPolicy();
+      if (stopWatchingUrlPolicy === unwatchUrlPolicy) {
+        stopWatchingUrlPolicy = null;
+      }
+    });
+  } catch {
+    stopWatchingUrlPolicy = null;
+  }
+  context.addEventListener(window, 'wxt:locationchange', handleLocationChange);
+  context.addEventListener(document, 'focusin', handleFocusIn, { capture: true });
+  context.addEventListener(document, 'input', handleTargetInput, { capture: true });
+  context.addEventListener(document, 'keydown', handleKeydown, { capture: true });
+  context.addEventListener(document, 'pointerdown', handlePointerDown, { capture: true });
+  context.addEventListener(window, 'scroll', handleScrollOrResize, { capture: true });
+  context.addEventListener(window, 'resize', handleScrollOrResize);
 }

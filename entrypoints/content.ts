@@ -4,7 +4,7 @@ import { initializeTextareaVim } from '../src/content';
 export default defineContentScript({
   matches: ['<all_urls>'],
   runAt: 'document_idle',
-  async main(): Promise<void> {
-    await initializeTextareaVim();
+  async main(ctx): Promise<void> {
+    await initializeTextareaVim(ctx);
   },
 });

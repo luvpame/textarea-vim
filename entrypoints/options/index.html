@@ -3,33 +3,37 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>TextareaVim 設定</title>
+    <meta name="manifest.open_in_tab" content="true" />
+    <title>TextareaVim URL設定</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <main>
-      <h1>TextareaVim 設定</h1>
-      <form id="settings-form">
-        <label for="insert-exit-key-sequence">INSERTを抜けるキー列</label>
-        <input
-          id="insert-exit-key-sequence"
-          name="insert-exit-key-sequence"
-          type="text"
-          maxlength="16"
-          autocomplete="off"
-          spellcheck="false"
-          aria-describedby="insert-exit-key-sequence-help"
-        />
-        <p id="insert-exit-key-sequence-help">
-          INSERTモード中に入力するキー列です。空欄にすると追加マッピングを無効にします。Escは常に使えます。
-        </p>
-        <div class="actions">
-          <button type="submit">保存</button>
-          <button id="reset-settings" type="button">既定値に戻す</button>
+    <header class="app-header">
+      <div class="brand-lockup">
+        <img class="brand-mark" src="/icons/48.png" alt="" width="40" height="40" />
+        <div class="brand-copy">
+          <p class="brand-name">TextareaVim</p>
+          <p class="brand-context">URL設定</p>
         </div>
-        <p id="settings-status" role="status" aria-live="polite"></p>
-      </form>
+      </div>
+    </header>
+
+    <main class="options-page">
+      <section class="page-intro" aria-labelledby="page-title">
+        <h1 id="page-title">URLの適用範囲</h1>
+        <p class="intro">
+          サイトごとにTextareaVimを有効にする範囲を指定します。
+        </p>
+      </section>
+
+      <section class="settings-section" aria-labelledby="settings-title">
+        <h2 id="settings-title">URLルール</h2>
+        <p class="settings-section-intro">設定を保存すると、開いているページにも反映されます。</p>
+        <div id="url-settings-mount"></div>
+      </section>
     </main>
+
+    <footer class="page-footer">設定はブラウザの同期ストレージに保存されます。</footer>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>
