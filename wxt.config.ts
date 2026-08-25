@@ -16,6 +16,7 @@ export default defineConfig({
   vite: function configureVite() {
     return {
       build: {
+        modulePreload: false,
         minify: 'esbuild',
         target: 'es2020',
       },

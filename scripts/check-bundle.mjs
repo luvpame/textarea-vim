@@ -24,17 +24,28 @@ if (!Array.isArray(manifest.content_scripts) || manifest.content_scripts.length 
   throw new Error('生成manifestにcontent_scriptsがありません');
 }
 
-async function listJavaScriptFiles(directory) {
+async function listFiles(directory, extension) {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = await Promise.all(
     entries.map(async function visit(entry) {
       const entryPath = path.join(directory, entry.name);
-      return entry.isDirectory() ? listJavaScriptFiles(entryPath) : [entryPath];
+      return entry.isDirectory() ? listFiles(entryPath, extension) : [entryPath];
     }),
   );
-  return files.flat().filter(function isJavaScript(file) {
-    return file.endsWith('.js');
+  return files.flat().filter(function hasExtension(file) {
+    return file.endsWith(extension);
   });
+}
+
+const htmlFiles = await listFiles(outputPath, '.html');
+for (const htmlFile of htmlFiles) {
+  const html = await readFile(htmlFile, 'utf8');
+  if (/\brel\s*=\s*["']modulepreload["']/i.test(html)) {
+    throw new Error(
+      `${path.relative(outputPath, htmlFile)}にmodulepreloadリンクがあります。` +
+        'Chrome拡張ページではmodulepreloadを無効にしてください',
+    );
+  }
 }
 
 const checks = [
@@ -56,7 +67,7 @@ function findUnicodeNoncharacter(source) {
   return null;
 }
 
-const bundleFiles = await listJavaScriptFiles(outputPath);
+const bundleFiles = await listFiles(outputPath, '.js');
 if (bundleFiles.length === 0) {
   throw new Error(`生成出力にJavaScriptバンドルがありません: ${outputPath}`);
 }
