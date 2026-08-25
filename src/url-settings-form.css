@@ -35,6 +35,7 @@
 }
 
 .url-settings-mode-section legend,
+.url-settings-extension-section legend,
 .url-settings-patterns-label {
   min-inline-size: 0;
   margin: 0;
@@ -47,6 +48,37 @@
 
 .url-settings-mode-section legend {
   grid-column: 1;
+}
+
+.url-settings-extension-section {
+  align-items: start;
+}
+
+.url-settings-extension-section legend {
+  grid-column: 1;
+}
+
+.url-settings-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-column: 2;
+  gap: 0.65rem;
+  align-items: start;
+  min-inline-size: 0;
+  color: var(--settings-text, CanvasText);
+  cursor: pointer;
+}
+
+.url-settings-toggle input {
+  inline-size: 1rem;
+  block-size: 1rem;
+  margin: 0.15rem 0 0;
+  accent-color: var(--settings-primary, Highlight);
+}
+
+.url-settings-toggle input:focus-visible {
+  outline: 2px solid var(--settings-focus, Highlight);
+  outline-offset: 2px;
 }
 
 .url-settings-modes {
@@ -241,6 +273,21 @@
   padding-block: 1rem;
 }
 
+.url-settings-form-compact .url-settings-extension-section legend {
+  margin-block-end: 0.75rem;
+  font-size: 0.8125rem;
+}
+
+.url-settings-form-compact .url-settings-toggle {
+  grid-column: auto;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.url-settings-form-compact .url-settings-toggle input {
+  margin: 0;
+}
+
 .url-settings-form-compact .url-settings-mode-section legend {
   margin-block-end: 0.75rem;
   font-size: 0.8125rem;
@@ -321,8 +368,13 @@
     margin-block-end: 0.75rem;
   }
 
+  .url-settings-form:not(.url-settings-form-compact) .url-settings-extension-section legend {
+    margin-block-end: 0.75rem;
+  }
+
   .url-settings-form:not(.url-settings-form-compact) .url-settings-modes,
-  .url-settings-form:not(.url-settings-form-compact) .url-settings-pattern-control {
+  .url-settings-form:not(.url-settings-form-compact) .url-settings-pattern-control,
+  .url-settings-form:not(.url-settings-form-compact) .url-settings-toggle {
     grid-column: auto;
   }
 

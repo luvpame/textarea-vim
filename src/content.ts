@@ -3,6 +3,11 @@ import { EditorState } from '@codemirror/state';
 import { drawSelection, EditorView, keymap, placeholder } from '@codemirror/view';
 import { Vim, vim } from '@replit/codemirror-vim';
 import type { ContentScriptContext, WxtWindowEventMap } from 'wxt/utils/content-script-context';
+import {
+  DEFAULT_EXTENSION_ENABLED,
+  readExtensionEnabled,
+  watchExtensionEnabled,
+} from './extension-settings.js';
 import { containKeyboardEvents } from './keyboard-boundary.js';
 import {
   dispatchTargetInputAndUpdateOverlay,
@@ -22,7 +27,6 @@ import {
 import { DEFAULT_URL_POLICY, isUrlAllowed, type UrlPolicy } from './url-policy.js';
 import { readUrlPolicy, watchUrlPolicy } from './url-settings.js';
 
-const TOGGLE_KEY = 'v';
 type VisibilitySnapshot = {
   value: string;
   priority: string;
@@ -49,23 +53,14 @@ type Session = {
 };
 
 const sessionState = {
-  enabled: true,
+  extensionEnabled: DEFAULT_EXTENSION_ENABLED,
   urlAllowed: true,
   urlPolicy: DEFAULT_URL_POLICY,
   session: null as Session | null,
 };
 
 let stopWatchingUrlPolicy: (() => void) | null = null;
-
-function isToggleShortcut(event: KeyboardEvent): boolean {
-  return (
-    event.altKey &&
-    event.shiftKey &&
-    !event.ctrlKey &&
-    !event.metaKey &&
-    event.key.toLowerCase() === TOGGLE_KEY
-  );
-}
+let stopWatchingExtensionEnabled: (() => void) | null = null;
 
 function isInsideSession(event: Event, session: Session | null): boolean {
   if (!session) {
@@ -174,6 +169,13 @@ function applyUrlPolicy(policy: UrlPolicy, url: string | URL = window.location.h
     closeSession({ restore: false });
   }
   sessionState.urlAllowed = allowed;
+}
+
+function applyExtensionEnabled(enabled: boolean): void {
+  sessionState.extensionEnabled = enabled;
+  if (!enabled) {
+    closeSession({ restore: false });
+  }
 }
 
 function handleLocationChange(event: WxtWindowEventMap['wxt:locationchange']): void {
@@ -292,7 +294,12 @@ function makeOverlay(target: HTMLTextAreaElement): {
 }
 
 function activate(target: HTMLTextAreaElement | null): void {
-  if (!sessionState.enabled || !sessionState.urlAllowed || !target || !isSupportedTarget(target)) {
+  if (
+    !sessionState.extensionEnabled ||
+    !sessionState.urlAllowed ||
+    !target ||
+    !isSupportedTarget(target)
+  ) {
     return;
   }
 
@@ -395,21 +402,6 @@ function handleTargetInput(event: Event): void {
 }
 
 function handleKeydown(event: KeyboardEvent): void {
-  if (sessionState.urlAllowed && !event.isComposing && isToggleShortcut(event)) {
-    const target = sessionState.session
-      ? sessionState.session.target
-      : findTarget(document.activeElement);
-    sessionState.enabled = !sessionState.enabled;
-    if (sessionState.enabled) {
-      activate(target || findTarget(document.activeElement));
-    } else {
-      closeSession({ restore: false });
-    }
-    event.preventDefault();
-    event.stopPropagation();
-    return;
-  }
-
   const session = sessionState.session;
   if (!session || event.isComposing || !isInsideSession(event, session)) {
     return;
@@ -443,6 +435,11 @@ function handleScrollOrResize(): void {
 export async function initializeTextareaVim(context: ContentScriptContext): Promise<void> {
   configureVim();
   try {
+    applyExtensionEnabled(await readExtensionEnabled());
+  } catch {
+    applyExtensionEnabled(DEFAULT_EXTENSION_ENABLED);
+  }
+  try {
     applyUrlPolicy(await readUrlPolicy());
   } catch {
     applyUrlPolicy({ ...DEFAULT_URL_POLICY });
@@ -460,6 +457,19 @@ export async function initializeTextareaVim(context: ContentScriptContext): Prom
     });
   } catch {
     stopWatchingUrlPolicy = null;
+  }
+  stopWatchingExtensionEnabled?.();
+  try {
+    stopWatchingExtensionEnabled = watchExtensionEnabled(applyExtensionEnabled);
+    const unwatchExtensionEnabled = stopWatchingExtensionEnabled;
+    context.onInvalidated(function stopExtensionEnabledWatcher(): void {
+      unwatchExtensionEnabled();
+      if (stopWatchingExtensionEnabled === unwatchExtensionEnabled) {
+        stopWatchingExtensionEnabled = null;
+      }
+    });
+  } catch {
+    stopWatchingExtensionEnabled = null;
   }
   context.addEventListener(window, 'wxt:locationchange', handleLocationChange);
   context.addEventListener(document, 'focusin', handleFocusIn, { capture: true });

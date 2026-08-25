@@ -187,15 +187,9 @@ test.beforeAll(async function startFixtureServer(): Promise<void> {
           <script>
             window.inputCount = 0;
             window.changeCount = 0;
-            window.shortcutCount = 0;
             const editor = document.querySelector('#editor');
             editor.addEventListener('input', () => { window.inputCount += 1; });
             editor.addEventListener('change', () => { window.changeCount += 1; });
-            document.addEventListener('keydown', (event) => {
-              if (event.altKey && event.shiftKey && event.key.toLowerCase() === 'v') {
-                window.shortcutCount += 1;
-              }
-            });
           </script>
         </body>
       </html>`);
@@ -437,14 +431,42 @@ test('URLポリシーの変更を開いているタブへ反映する', async fu
     await expect(page.locator('[aria-label="TextareaVim editor"]')).toHaveCount(0);
     await page.locator('#editor').focus();
     await expect(page.locator('[aria-label="TextareaVim editor"]')).toHaveCount(0);
-    await page.keyboard.press('Alt+Shift+V');
-    await expect
-      .poll(async function readShortcutCount(): Promise<number> {
-        return page.evaluate(function readCount(): number {
-          return (window as unknown as Window & { shortcutCount: number }).shortcutCount;
-        });
-      })
-      .toBe(1);
+  } finally {
+    await closeBrowser(runningBrowser);
+  }
+});
+
+test('拡張機能の内部有効設定を開いているタブへ反映する', async function testExtensionEnabledSetting(): Promise<void> {
+  const extensionPath = path.resolve('.output/chrome-mv3');
+  let runningBrowser: RunningBrowser | undefined;
+
+  try {
+    runningBrowser = await launchBrowser();
+    const extensionId = await loadExtension(runningBrowser.browser, extensionPath);
+    const options = await openExtensionPage(runningBrowser.context, extensionId, 'options');
+    const enabledSwitch = options.getByRole('switch', { name: 'TextareaVimを有効にする' });
+    await expect(enabledSwitch).toBeChecked();
+
+    const page = await runningBrowser.context.newPage();
+    await page.goto(pageUrl);
+    await page.waitForLoadState('networkidle');
+    const textarea = page.locator('#editor');
+    await textarea.focus();
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toBeVisible();
+
+    await enabledSwitch.uncheck();
+    await expect(options.locator('#settings-status')).toHaveText('拡張機能の設定を保存しました。');
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toHaveCount(0);
+    await textarea.focus();
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toHaveCount(0);
+
+    await enabledSwitch.check();
+    await expect(options.locator('#settings-status')).toHaveText('拡張機能の設定を保存しました。');
+    await page.evaluate(function blurActiveElement(): void {
+      (document.activeElement as HTMLElement | null)?.blur();
+    });
+    await textarea.focus();
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toBeVisible();
   } finally {
     await closeBrowser(runningBrowser);
   }

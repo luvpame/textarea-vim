@@ -1,4 +1,9 @@
 import {
+  DEFAULT_EXTENSION_ENABLED,
+  readExtensionEnabled,
+  saveExtensionEnabled,
+} from './extension-settings.js';
+import {
   DEFAULT_URL_POLICY,
   formatUrlPatterns,
   parseUrlPatterns,
@@ -14,6 +19,7 @@ export type UrlSettingsFormOptions = {
 
 type FormElements = {
   form: HTMLFormElement;
+  extensionEnabledInput: HTMLInputElement;
   blocklistInput: HTMLInputElement;
   allowlistInput: HTMLInputElement;
   patternsInput: HTMLTextAreaElement;
@@ -60,6 +66,36 @@ function createForm(documentObject: Document, compact: boolean): FormElements {
     form.classList.add('url-settings-form-compact');
   }
   form.noValidate = true;
+
+  const extensionSection = createElement(
+    documentObject,
+    'fieldset',
+    'url-settings-section url-settings-extension-section',
+  );
+  const extensionLegend = createElement(documentObject, 'legend');
+  extensionLegend.textContent = 'TextareaVim';
+  const extensionLabel = createElement(documentObject, 'label', 'url-settings-toggle');
+  const extensionEnabledInput = createElement(documentObject, 'input');
+  extensionEnabledInput.type = 'checkbox';
+  extensionEnabledInput.setAttribute('role', 'switch');
+  extensionEnabledInput.checked = DEFAULT_EXTENSION_ENABLED;
+  extensionEnabledInput.disabled = true;
+  extensionEnabledInput.id = 'extension-enabled';
+  extensionEnabledInput.name = 'extension-enabled';
+  extensionEnabledInput.setAttribute('aria-label', 'TextareaVimを有効にする');
+  const extensionCopy = createElement(documentObject, 'span', 'url-settings-mode-copy');
+  const extensionTitle = createElement(documentObject, 'span', 'url-settings-mode-title');
+  extensionTitle.textContent = '拡張機能を有効にする';
+  const extensionDescription = createElement(
+    documentObject,
+    'span',
+    'url-settings-mode-description',
+  );
+  extensionDescription.textContent =
+    'オフにすると、ブラウザで拡張機能を有効にしたままTextareaVimだけを停止します';
+  extensionCopy.append(extensionTitle, extensionDescription);
+  extensionLabel.append(extensionEnabledInput, extensionCopy);
+  extensionSection.append(extensionLegend, extensionLabel);
 
   const fieldset = createElement(
     documentObject,
@@ -135,7 +171,7 @@ function createForm(documentObject: Document, compact: boolean): FormElements {
   const resetButton = createElement(documentObject, 'button');
   resetButton.type = 'button';
   resetButton.className = 'url-settings-button url-settings-button-secondary';
-  resetButton.textContent = '既定値に戻す';
+  resetButton.textContent = 'URL設定を既定値に戻す';
   resetButton.dataset.action = 'reset-url-policy';
   actions.append(saveButton, resetButton);
 
@@ -144,8 +180,17 @@ function createForm(documentObject: Document, compact: boolean): FormElements {
   status.className = 'url-settings-status';
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
-  form.append(fieldset, patternsSection, actions, status);
-  return { form, blocklistInput, allowlistInput, patternsInput, errors, status, resetButton };
+  form.append(extensionSection, fieldset, patternsSection, actions, status);
+  return {
+    form,
+    extensionEnabledInput,
+    blocklistInput,
+    allowlistInput,
+    patternsInput,
+    errors,
+    status,
+    resetButton,
+  };
 }
 
 function readMode(elements: FormElements): UrlPolicyMode {
@@ -181,18 +226,25 @@ export function mountUrlSettingsForm(
 
   async function load(): Promise<void> {
     try {
-      const policy = await readUrlPolicy();
+      const [extensionEnabled, policy] = await Promise.all([
+        readExtensionEnabled(),
+        readUrlPolicy(),
+      ]);
+      elements.extensionEnabledInput.checked = extensionEnabled;
       elements.blocklistInput.checked = policy.mode === 'blocklist';
       elements.allowlistInput.checked = policy.mode === 'allowlist';
       elements.patternsInput.value = formatUrlPatterns(policy.patterns);
       renderErrors(elements, []);
       setStatus(elements, '');
     } catch {
+      elements.extensionEnabledInput.checked = DEFAULT_EXTENSION_ENABLED;
       elements.blocklistInput.checked = DEFAULT_URL_POLICY.mode === 'blocklist';
       elements.allowlistInput.checked = DEFAULT_URL_POLICY.mode === 'allowlist';
       elements.patternsInput.value = '';
       renderErrors(elements, []);
       setStatus(elements, '設定を読み込めませんでした。既定値を表示しています。', 'error');
+    } finally {
+      elements.extensionEnabledInput.disabled = false;
     }
   }
 
@@ -240,8 +292,25 @@ export function mountUrlSettingsForm(
     void reset();
   }
 
+  async function handleExtensionEnabledChange(): Promise<void> {
+    const requested = elements.extensionEnabledInput.checked;
+    elements.extensionEnabledInput.disabled = true;
+    try {
+      await saveExtensionEnabled(requested);
+      setStatus(elements, '拡張機能の設定を保存しました。', 'success');
+    } catch {
+      elements.extensionEnabledInput.checked = !requested;
+      setStatus(elements, '拡張機能の設定を保存できませんでした。', 'error');
+    } finally {
+      elements.extensionEnabledInput.disabled = false;
+    }
+  }
+
   elements.form.addEventListener('submit', handleSubmit);
   elements.resetButton.addEventListener('click', handleReset);
+  elements.extensionEnabledInput.addEventListener('change', function saveExtensionSetting(): void {
+    void handleExtensionEnabledChange();
+  });
 
   void load();
 }
