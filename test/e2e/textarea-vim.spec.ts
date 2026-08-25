@@ -359,7 +359,12 @@ test('URL設定をポップアップと通常の設定画面で共有する', as
     const extensionId = await loadExtension(runningBrowser.browser, extensionPath);
     const popup = await openExtensionPage(runningBrowser.context, extensionId, 'popup');
     await expect(popup.getByLabel('ブラックリスト')).toBeChecked();
-    await saveUrlPolicy(popup, 'allowlist', `http://${new URL(pageUrl).hostname}/`);
+    const fixtureOrigin = `http://${new URL(pageUrl).hostname}`;
+    await popup.getByLabel('ホワイトリスト').check();
+    await popup.locator('#url-policy-patterns').fill(fixtureOrigin);
+    await expect(popup.locator('#url-policy-pattern-preview')).toContainText(`${fixtureOrigin}/*`);
+    await popup.getByRole('button', { name: '保存' }).click();
+    await expect(popup.locator('#settings-status')).toHaveText('保存しました。');
 
     await popup.getByRole('button', { name: '通常の設定画面を開く' }).click();
     await expect
@@ -378,9 +383,7 @@ test('URL設定をポップアップと通常の設定画面で共有する', as
       throw new Error('設定画面が開かれていません');
     }
     await expect(options.getByLabel('ホワイトリスト')).toBeChecked();
-    await expect(options.locator('#url-policy-patterns')).toHaveValue(
-      `http://${new URL(pageUrl).hostname}/`,
-    );
+    await expect(options.locator('#url-policy-patterns')).toHaveValue(`${fixtureOrigin}/*`);
 
     await saveUrlPolicy(options, 'blocklist', `http://${new URL(pageUrl).hostname}/*`);
     await popup.reload();

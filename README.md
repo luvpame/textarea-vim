@@ -86,8 +86,10 @@ URL設定は拡張機能のポップアップと通常の設定画面から変�
 ブラックリストでは一致したURLだけ無効になり、ホワイトリストでは一致したURLだけ有効になります。
 ブラックリストの空欄はすべてのURLを有効にし、ホワイトリストの空欄はすべてのURLを無効にします。
 
-パターンは1行に1つ入力します。
-`https://github.com/*`や`*://*.example.com/*`のようなChrome match patternを使えます。
+対象サイトまたはURLパターンを1行に1つ入力します。
+`github.com`や`https://github.com`のような入力は、保存時に`*://github.com/*`や`https://github.com/*`へ自動補完します。
+`localhost`や`127.0.0.1`のようなローカルのhost shorthandも同じ規則で補完します。
+`https://github.com/*`や`*://*.example.com/*`のようなChrome match patternは、そのまま使えます。
 対応するschemeは`http`、`https`、`file`、`*`です。
 空行と重複したパターンは保存時に取り除きます。
 不正なパターンがある場合は行番号を示して保存を拒否します。

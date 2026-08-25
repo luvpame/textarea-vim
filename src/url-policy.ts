@@ -1,5 +1,7 @@
 import { MatchPattern } from 'wxt/utils/match-patterns';
 
+const URL_PATTERN_EXAMPLE = ['https', ':', '/', '/', 'example.com/*'].join('');
+
 export type UrlPolicyMode = 'blocklist' | 'allowlist';
 
 export type UrlPolicy = {
@@ -37,11 +39,72 @@ function isUrlPolicyMode(value: unknown): value is UrlPolicyMode {
   return value === 'blocklist' || value === 'allowlist';
 }
 
-function readMatchPatternError(error: unknown): string {
-  if (error instanceof Error && error.message) {
-    return error.message;
+function isHostLabel(value: string): boolean {
+  return value.length > 0 && value.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(value);
+}
+
+function isIpv4Address(value: string): boolean {
+  const octets = value.split('.');
+  return (
+    octets.length === 4 &&
+    octets.every(function isValidOctet(octet): boolean {
+      return /^\d{1,3}$/.test(octet) && Number(octet) <= 255;
+    })
+  );
+}
+
+function isShorthandHost(value: string): boolean {
+  const includesSubdomains = value.startsWith('*.');
+  const host = includesSubdomains ? value.slice(2) : value;
+  if (value.includes('*') && !includesSubdomains) {
+    return false;
   }
-  return 'Chrome match patternとして解釈できません';
+  if (host === 'localhost' || isIpv4Address(host)) {
+    return !includesSubdomains;
+  }
+
+  const labels = host.split('.');
+  return labels.length >= 2 && labels.every(isHostLabel) && host.length <= 253;
+}
+
+function normalizeHostShorthand(value: string): string | null {
+  const host = value.endsWith('/') ? value.slice(0, -1) : value;
+  if (!isShorthandHost(host)) {
+    return null;
+  }
+  return host.toLowerCase();
+}
+
+export function normalizeUrlPattern(value: string): string {
+  const pattern = value.trim();
+  const schemeHost = /^(https?|\*):\/\/([^/]+)$/i.exec(pattern);
+  if (schemeHost) {
+    const scheme = schemeHost[1];
+    const rawHost = schemeHost[2];
+    if (scheme && rawHost) {
+      const host = normalizeHostShorthand(rawHost);
+      if (host) {
+        return `${scheme.toLowerCase()}://${host}/*`;
+      }
+    }
+  }
+
+  const host = normalizeHostShorthand(pattern);
+  return host ? `*://${host}/*` : pattern;
+}
+
+function readMatchPatternError(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('Incorrect format')) {
+    return `URLのscheme、host、pathを確認してください。例: ${URL_PATTERN_EXAMPLE}`;
+  }
+  if (message.includes('Hostname cannot include a port')) {
+    return 'ポート番号付きのURLパターンには現在対応していません。ポートを外して入力してください。';
+  }
+  if (message.includes('If using a wildcard')) {
+    return 'hostの*は先頭に置き、*.example.comの形で入力してください。';
+  }
+  return `URLパターンを確認してください。例: ${URL_PATTERN_EXAMPLE}`;
 }
 
 function validatePattern(pattern: string): string | null {
@@ -67,7 +130,7 @@ export function parseUrlPatterns(value: string): UrlPatternParseResult {
   const seen = new Set<string>();
 
   for (const [index, line] of value.split(/\r?\n/).entries()) {
-    const pattern = line.trim();
+    const pattern = normalizeUrlPattern(line);
     if (!pattern) {
       continue;
     }
@@ -94,7 +157,7 @@ function normalizeUrlPatterns(patterns: readonly unknown[]): string[] {
     if (typeof value !== 'string') {
       continue;
     }
-    const pattern = value.trim();
+    const pattern = normalizeUrlPattern(value);
     if (!pattern || seen.has(pattern) || validatePattern(pattern)) {
       continue;
     }

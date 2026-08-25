@@ -6,12 +6,15 @@ import {
 import {
   DEFAULT_URL_POLICY,
   formatUrlPatterns,
+  normalizeUrlPattern,
   parseUrlPatterns,
   type UrlPatternError,
   type UrlPolicyMode,
   UrlPolicyValidationError,
 } from './url-policy.js';
 import { readUrlPolicy, saveUrlPolicy } from './url-settings.js';
+
+const HTTPS_ORIGIN_EXAMPLE = ['https', ':', '/', '/', 'github.com'].join('');
 
 export type UrlSettingsFormOptions = {
   compact?: boolean;
@@ -23,6 +26,7 @@ type FormElements = {
   blocklistInput: HTMLInputElement;
   allowlistInput: HTMLInputElement;
   patternsInput: HTMLTextAreaElement;
+  preview: HTMLParagraphElement;
   errors: HTMLUListElement;
   status: HTMLParagraphElement;
   resetButton: HTMLButtonElement;
@@ -140,7 +144,7 @@ function createForm(documentObject: Document, compact: boolean): FormElements {
   );
   const patternsLabel = createElement(documentObject, 'label', 'url-settings-patterns-label');
   patternsLabel.htmlFor = 'url-policy-patterns';
-  patternsLabel.textContent = 'URLパターン（1行に1つ）';
+  patternsLabel.textContent = '対象サイトまたはURLパターン（1行に1つ）';
   const patternsInput = createElement(documentObject, 'textarea');
   patternsInput.id = 'url-policy-patterns';
   patternsInput.name = 'url-policy-patterns';
@@ -149,18 +153,23 @@ function createForm(documentObject: Document, compact: boolean): FormElements {
   patternsInput.spellcheck = false;
   patternsInput.setAttribute(
     'aria-describedby',
-    'url-policy-patterns-help url-policy-pattern-errors',
+    'url-policy-patterns-help url-policy-pattern-preview url-policy-pattern-errors',
   );
   const help = createElement(documentObject, 'p');
   help.id = 'url-policy-patterns-help';
   help.className = 'url-settings-help';
-  help.textContent = '例: *://github.com/*、*://*.example.com/*。空行は無視します。';
+  help.textContent = `例: github.com、${HTTPS_ORIGIN_EXAMPLE}、*://*.example.com/*。保存時にmatch patternへ自動補完します。`;
+  const preview = createElement(documentObject, 'p');
+  preview.id = 'url-policy-pattern-preview';
+  preview.className = 'url-settings-preview';
+  preview.setAttribute('aria-live', 'polite');
+  preview.setAttribute('aria-atomic', 'true');
   const errors = createElement(documentObject, 'ul');
   errors.id = 'url-policy-pattern-errors';
   errors.className = 'url-settings-errors';
   errors.setAttribute('role', 'alert');
   const patternsControl = createElement(documentObject, 'div', 'url-settings-pattern-control');
-  patternsControl.append(patternsInput, help, errors);
+  patternsControl.append(patternsInput, help, preview, errors);
   patternsSection.append(patternsLabel, patternsControl);
 
   const actions = createElement(documentObject, 'div', 'url-settings-actions');
@@ -187,6 +196,7 @@ function createForm(documentObject: Document, compact: boolean): FormElements {
     blocklistInput,
     allowlistInput,
     patternsInput,
+    preview,
     errors,
     status,
     resetButton,
@@ -217,6 +227,26 @@ function renderErrors(elements: FormElements, errors: readonly UrlPatternError[]
   );
 }
 
+function renderPatternPreview(elements: FormElements): void {
+  const changes: string[] = [];
+  for (const line of elements.patternsInput.value.split(/\r?\n/)) {
+    const input = line.trim();
+    if (!input) {
+      continue;
+    }
+    const normalized = normalizeUrlPattern(input);
+    if (normalized !== input) {
+      changes.push(`${input} → ${normalized}`);
+    }
+  }
+  elements.preview.textContent = changes.length > 0 ? `保存時の補完:\n${changes.join('\n')}` : '';
+}
+
+function renderPatternFeedback(elements: FormElements, errors: readonly UrlPatternError[]): void {
+  renderErrors(elements, errors);
+  renderPatternPreview(elements);
+}
+
 export function mountUrlSettingsForm(
   container: HTMLElement,
   options: UrlSettingsFormOptions = {},
@@ -234,14 +264,14 @@ export function mountUrlSettingsForm(
       elements.blocklistInput.checked = policy.mode === 'blocklist';
       elements.allowlistInput.checked = policy.mode === 'allowlist';
       elements.patternsInput.value = formatUrlPatterns(policy.patterns);
-      renderErrors(elements, []);
+      renderPatternFeedback(elements, []);
       setStatus(elements, '');
     } catch {
       elements.extensionEnabledInput.checked = DEFAULT_EXTENSION_ENABLED;
       elements.blocklistInput.checked = DEFAULT_URL_POLICY.mode === 'blocklist';
       elements.allowlistInput.checked = DEFAULT_URL_POLICY.mode === 'allowlist';
       elements.patternsInput.value = '';
-      renderErrors(elements, []);
+      renderPatternFeedback(elements, []);
       setStatus(elements, '設定を読み込めませんでした。既定値を表示しています。', 'error');
     } finally {
       elements.extensionEnabledInput.disabled = false;
@@ -250,7 +280,7 @@ export function mountUrlSettingsForm(
 
   async function save(): Promise<void> {
     const parsed = parseUrlPatterns(elements.patternsInput.value);
-    renderErrors(elements, parsed.errors);
+    renderPatternFeedback(elements, parsed.errors);
     if (parsed.errors.length > 0) {
       setStatus(elements, '入力内容を確認してください。', 'error');
       return;
@@ -259,10 +289,11 @@ export function mountUrlSettingsForm(
     try {
       await saveUrlPolicy({ mode: readMode(elements), patterns: parsed.patterns });
       elements.patternsInput.value = formatUrlPatterns(parsed.patterns);
+      renderPatternFeedback(elements, []);
       setStatus(elements, '保存しました。', 'success');
     } catch (error) {
       if (error instanceof UrlPolicyValidationError) {
-        renderErrors(elements, error.errors);
+        renderPatternFeedback(elements, error.errors);
         setStatus(elements, '入力内容を確認してください。', 'error');
       } else {
         setStatus(elements, '設定を保存できませんでした。', 'error');
@@ -274,7 +305,7 @@ export function mountUrlSettingsForm(
     elements.blocklistInput.checked = true;
     elements.allowlistInput.checked = false;
     elements.patternsInput.value = '';
-    renderErrors(elements, []);
+    renderPatternFeedback(elements, []);
     try {
       await saveUrlPolicy(DEFAULT_URL_POLICY);
       setStatus(elements, '既定値に戻しました。', 'success');
@@ -308,6 +339,9 @@ export function mountUrlSettingsForm(
 
   elements.form.addEventListener('submit', handleSubmit);
   elements.resetButton.addEventListener('click', handleReset);
+  elements.patternsInput.addEventListener('input', function previewPatternNormalization(): void {
+    renderPatternPreview(elements);
+  });
   elements.extensionEnabledInput.addEventListener('change', function saveExtensionSetting(): void {
     void handleExtensionEnabledChange();
   });

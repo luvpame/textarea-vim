@@ -40,6 +40,70 @@ describe('URLポリシー', function describeUrlPolicy(): void {
     });
   });
 
+  test('schemeとhostだけの入力を全パスのmatch patternへ補完する', function testCompleteShorthandOrigins(): void {
+    expect(parseUrlPatterns('https://github.com')).toEqual({
+      patterns: ['https://github.com/*'],
+      errors: [],
+    });
+    expect(parseUrlPatterns('http://github.com')).toEqual({
+      patterns: ['http://github.com/*'],
+      errors: [],
+    });
+    expect(parseUrlPatterns('*://github.com')).toEqual({
+      patterns: ['*://github.com/*'],
+      errors: [],
+    });
+  });
+
+  test('schemeなしのhost shorthandを全schemeのmatch patternへ補完する', function testCompleteHostShorthand(): void {
+    expect(parseUrlPatterns('github.com')).toEqual({
+      patterns: ['*://github.com/*'],
+      errors: [],
+    });
+    expect(parseUrlPatterns('*.github.com')).toEqual({
+      patterns: ['*://*.github.com/*'],
+      errors: [],
+    });
+    expect(parseUrlPatterns('localhost')).toEqual({
+      patterns: ['*://localhost/*'],
+      errors: [],
+    });
+    expect(parseUrlPatterns('127.0.0.1')).toEqual({
+      patterns: ['*://127.0.0.1/*'],
+      errors: [],
+    });
+  });
+
+  test('pathが明示されたpatternは意味を変えずに保持する', function testPreserveExplicitPaths(): void {
+    expect(
+      parseUrlPatterns('https://github.com/\nhttps://github.com/foo\nhttps://github.com/foo*'),
+    ).toEqual({
+      patterns: ['https://github.com/', 'https://github.com/foo', 'https://github.com/foo*'],
+      errors: [],
+    });
+  });
+
+  test('不正な入力は日本語の修正案付きで報告する', function testReadableInvalidPatternError(): void {
+    const result = parseUrlPatterns('https://');
+    expect(result.patterns).toEqual([]);
+    expect(result.errors).toEqual([
+      {
+        line: 1,
+        pattern: 'https://',
+        message: 'URLのscheme、host、pathを確認してください。例: https://example.com/*',
+      },
+    ]);
+  });
+
+  test('保存値のschemeなしhost shorthandも正規化する', function testNormalizeStoredHostShorthand(): void {
+    expect(
+      normalizeUrlPolicy({ mode: 'allowlist', patterns: ['github.com', 'https://github.com'] }),
+    ).toEqual({
+      mode: 'allowlist',
+      patterns: ['*://github.com/*', 'https://github.com/*'],
+    });
+  });
+
   test('不正なパターンを行番号付きで報告する', function testInvalidPattern(): void {
     const result = parseUrlPatterns('https://example.com/*\nnot-a-match-pattern');
     expect(result.patterns).toEqual(['https://example.com/*']);

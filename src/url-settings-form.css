@@ -178,6 +178,14 @@
   line-height: 1.55;
 }
 
+.url-settings-preview {
+  margin: 0;
+  color: var(--settings-muted, GrayText);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .url-settings-errors {
   display: none;
   gap: 0.35rem;
