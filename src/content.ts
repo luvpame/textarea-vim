@@ -4,6 +4,11 @@ import { drawSelection, EditorView, keymap, placeholder } from '@codemirror/view
 import { Vim, vim } from '@replit/codemirror-vim';
 import { containKeyboardEvents } from './keyboard-boundary.js';
 import {
+  dispatchTargetInputAndUpdateOverlay,
+  observeOverlayPosition,
+  updateOverlayPosition,
+} from './overlay-position.js';
+import {
   DEFAULT_INSERT_EXIT_KEY_SEQUENCE,
   readInsertExitKeySequence,
   watchInsertExitKeySequence,
@@ -40,7 +45,8 @@ type Session = {
   previousVisibility: VisibilitySnapshot;
   syncing: boolean;
   closing: boolean;
-  observer: MutationObserver;
+  connectionObserver: MutationObserver;
+  resizeObserver: ResizeObserver;
   view: EditorView | null;
 };
 
@@ -128,18 +134,6 @@ function copyTargetAppearance(target: HTMLTextAreaElement, host: HTMLDivElement)
   host.style.borderRadius = style.borderRadius;
 }
 
-function updateOverlayPosition(session: Session | null): void {
-  if (!session?.target.isConnected) {
-    return;
-  }
-
-  const rectangle = session.target.getBoundingClientRect();
-  session.host.style.left = `${rectangle.left}px`;
-  session.host.style.top = `${rectangle.top}px`;
-  session.host.style.width = `${rectangle.width}px`;
-  session.host.style.height = `${rectangle.height}px`;
-}
-
 function applyInsertExitKeySequence(keySequence: string): void {
   if (configuredInsertExitKeySequence) {
     Vim.unmap(configuredInsertExitKeySequence, 'insert');
@@ -212,7 +206,7 @@ function dispatchEditorText(session: Session, text: string, shouldDispatchInput:
       session.view.state.selection.main.to,
     );
     if (shouldDispatchInput) {
-      dispatchTargetInput(session.target);
+      dispatchTargetInputAndUpdateOverlay(session.target, session.host);
     }
   } finally {
     session.syncing = false;
@@ -264,7 +258,8 @@ function closeSession(options: { restore?: boolean } = {}): void {
     syncViewToTarget(session, true);
   }
 
-  session.observer.disconnect();
+  session.connectionObserver.disconnect();
+  session.resizeObserver.disconnect();
   session.view?.destroy();
   session.host.remove();
   if (session.target.isConnected) {
@@ -335,16 +330,20 @@ function activate(target: HTMLTextAreaElement | null): void {
     previousVisibility,
     syncing: false,
     closing: false,
-    observer: new MutationObserver(function observeTarget() {
+    connectionObserver: new MutationObserver(function observeTarget() {
       if (!target.isConnected) {
         closeSession({ restore: false });
       }
     }),
+    resizeObserver: observeOverlayPosition(target, overlay.host),
     view: null,
   };
 
   target.style.setProperty('visibility', 'hidden', 'important');
-  session.observer.observe(getDocument(target).documentElement, { childList: true, subtree: true });
+  session.connectionObserver.observe(getDocument(target).documentElement, {
+    childList: true,
+    subtree: true,
+  });
   const extensions = [
     EditorView.theme({
       '.cm-content': {
@@ -376,7 +375,7 @@ function activate(target: HTMLTextAreaElement | null): void {
   const view = new EditorView({ state, parent: overlay.mount, root: overlay.shadow });
   session.view = view;
   sessionState.session = session;
-  updateOverlayPosition(session);
+  updateOverlayPosition(session.target, session.host);
   view.focus();
 }
 
@@ -450,7 +449,7 @@ function handleScrollOrResize(): void {
     closeSession({ restore: false });
     return;
   }
-  updateOverlayPosition(session);
+  updateOverlayPosition(session.target, session.host);
 }
 
 export async function initializeTextareaVim(): Promise<void> {
