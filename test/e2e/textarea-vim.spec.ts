@@ -183,6 +183,8 @@ test.beforeAll(async function startFixtureServer(): Promise<void> {
         <body>
           <label for="editor">本文</label>
           <textarea id="editor" rows="4">hello</textarea>
+          <label for="image-editor">画像コメント</label>
+          <textarea id="image-editor" rows="4"></textarea>
           <textarea id="placeholder-editor" rows="4" placeholder="Add your comment here..."></textarea>
           <script>
             window.inputCount = 0;
@@ -247,6 +249,487 @@ test('textareaをVimで編集して元要素へ同期する', async function tes
         });
       })
       .toEqual({ input: 1, change: 1 });
+  } finally {
+    await closeBrowser(runningBrowser);
+  }
+});
+
+test('実際のクリップボード画像をGitHub型のアップロード処理へ渡す', async function testTrustedImagePasteFlow(): Promise<void> {
+  const extensionPath = path.resolve('.output/chrome-mv3');
+  let runningBrowser: RunningBrowser | undefined;
+
+  try {
+    runningBrowser = await launchBrowser();
+    await loadExtension(runningBrowser.browser, extensionPath);
+    await runningBrowser.context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+      origin: new URL(pageUrl).origin,
+    });
+    const page = await runningBrowser.context.newPage();
+    await page.goto(pageUrl);
+    await page.waitForLoadState('networkidle');
+
+    await page.evaluate(function selectExistingText(): void {
+      const textarea = document.querySelector<HTMLTextAreaElement>('#image-editor');
+      if (!textarea) {
+        throw new Error('GitHub-like editor fixture was not rendered');
+      }
+      textarea.setSelectionRange(0, 0);
+    });
+
+    await page.evaluate(function installGithubLikeUploadHook(): void {
+      const textarea = document.querySelector<HTMLTextAreaElement>('#image-editor');
+      if (!textarea) {
+        throw new Error('GitHub-like editor fixture was not rendered');
+      }
+      const ancestor = textarea.parentElement;
+      if (!ancestor) {
+        throw new Error('GitHub-like editor fixture was not rendered');
+      }
+      const target = textarea;
+
+      const state = {
+        events: 0,
+        trusted: false,
+        itemCount: 0,
+        fileName: '',
+        defaultPrevented: false,
+        targetVisibleAtPaste: false,
+        targetFocusedAtPaste: false,
+        originalValue: '',
+        originalSelectionStart: -1,
+        originalSelectionEnd: -1,
+        placeholder: '',
+        placeholderRangeStart: -1,
+        placeholderRangeEnd: -1,
+        placeholderFoundAtCompletion: false,
+        placeholderReplaced: false,
+        selectionValidAtCompletion: false,
+        cleanupPerformed: false,
+        timeline: [] as Array<{
+          phase: string;
+          textarea: string;
+          editor: string;
+          selectionStart: number;
+          selectionEnd: number;
+          placeholderFound: boolean;
+        }>,
+        inputEvents: 0,
+        changeEvents: 0,
+        uploadCompleted: false,
+        finalTargetValue: '',
+        finalEditorValue: '',
+      };
+      (
+        window as unknown as Window & { githubImagePasteState: typeof state }
+      ).githubImagePasteState = state;
+      function readEditorValue(): string {
+        const host = document.querySelector<HTMLElement>('[aria-label="TextareaVim editor"]');
+        const lines = host?.shadowRoot?.querySelectorAll('.cm-line');
+        return lines
+          ? Array.from(lines, function readLine(line): string {
+              return line.textContent ?? '';
+            }).join('\n')
+          : '';
+      }
+      function recordSnapshot(phase: string, placeholder: string): void {
+        const value = target.value;
+        state.timeline.push({
+          phase,
+          textarea: value,
+          editor: readEditorValue(),
+          selectionStart: target.selectionStart,
+          selectionEnd: target.selectionEnd,
+          placeholderFound: value.includes(placeholder),
+        });
+      }
+      ancestor.addEventListener('paste', function handlePaste(event: ClipboardEvent): void {
+        state.targetVisibleAtPaste = getComputedStyle(target).visibility !== 'hidden';
+        state.targetFocusedAtPaste = document.activeElement === target;
+        if (event.target !== target) {
+          return;
+        }
+        const clipboardData = event.clipboardData;
+        const file = clipboardData?.files[0];
+        if (!file?.type.startsWith('image/')) {
+          return;
+        }
+        if (!state.targetVisibleAtPaste || !state.targetFocusedAtPaste) {
+          return;
+        }
+
+        state.events += 1;
+        state.trusted = event.isTrusted;
+        state.itemCount = clipboardData?.items.length ?? 0;
+        state.fileName = file.name;
+        state.defaultPrevented = event.defaultPrevented;
+        event.preventDefault();
+        const placeholder = `![Uploading... ${file.name} (textarea-vim-unique)]()\n`;
+        const originalValue = target.value;
+        const originalSelectionStart = target.selectionStart;
+        const originalSelectionEnd = target.selectionEnd;
+        const placeholderRangeStart = originalSelectionStart;
+        const placeholderRangeEnd = placeholderRangeStart + placeholder.length;
+        state.originalValue = originalValue;
+        state.originalSelectionStart = originalSelectionStart;
+        state.originalSelectionEnd = originalSelectionEnd;
+        state.placeholder = placeholder;
+        state.placeholderRangeStart = placeholderRangeStart;
+        state.placeholderRangeEnd = placeholderRangeEnd;
+        recordSnapshot('before', placeholder);
+        target.setRangeText(placeholder, originalSelectionStart, originalSelectionEnd, 'end');
+        recordSnapshot('uploading-before-change', placeholder);
+        target.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        recordSnapshot('uploading', placeholder);
+        setTimeout(function finishUpload(): void {
+          const currentPlaceholderStart = target.value.indexOf(placeholder);
+          state.placeholderFoundAtCompletion =
+            currentPlaceholderStart === placeholderRangeStart &&
+            target.value.slice(placeholderRangeStart, placeholderRangeEnd) === placeholder;
+          state.placeholderRangeStart = currentPlaceholderStart;
+          state.placeholderRangeEnd =
+            currentPlaceholderStart < 0 ? -1 : currentPlaceholderStart + placeholder.length;
+          recordSnapshot('before-replace', placeholder);
+          state.selectionValidAtCompletion =
+            target.selectionStart === placeholderRangeEnd &&
+            target.selectionEnd === placeholderRangeEnd;
+          if (!state.placeholderFoundAtCompletion || !state.selectionValidAtCompletion) {
+            if (currentPlaceholderStart >= 0) {
+              target.setRangeText(
+                '',
+                currentPlaceholderStart,
+                currentPlaceholderStart + placeholder.length,
+                'end',
+              );
+            } else {
+              target.value = '';
+            }
+            state.cleanupPerformed = true;
+            target.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+            recordSnapshot('cleanup', placeholder);
+            state.uploadCompleted = true;
+            return;
+          }
+          const finalMarkup =
+            '<img width="5058" height="3372" src="https://github.com/user-attachments/assets/screenshot.png" />\n';
+          textarea.setRangeText(finalMarkup, placeholderRangeStart, placeholderRangeEnd, 'end');
+          state.placeholderReplaced = true;
+          target.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+          recordSnapshot('complete', placeholder);
+          state.uploadCompleted = true;
+        }, 0);
+      });
+      target.addEventListener('input', function countUploadInputs(): void {
+        state.inputEvents += 1;
+      });
+      target.addEventListener('change', function countUploadChanges(): void {
+        state.changeEvents += 1;
+      });
+    });
+
+    await page.evaluate(async function writeImageToClipboard(): Promise<void> {
+      const encodedImage =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+      const imageBytes = Uint8Array.from(atob(encodedImage), function toByte(character): number {
+        return character.charCodeAt(0);
+      });
+      const image = new Blob([imageBytes], { type: 'image/png' });
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': image })]);
+    });
+
+    await page.locator('#image-editor').focus();
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toBeVisible();
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+V' : 'Control+V');
+
+    await expect
+      .poll(async function readGithubLikeUploadState(): Promise<{
+        events: number;
+        trusted: boolean;
+        itemCount: number;
+        fileName: string;
+        defaultPrevented: boolean;
+        targetVisibleAtPaste: boolean;
+        targetFocusedAtPaste: boolean;
+        originalValue: string;
+        originalSelectionStart: number;
+        originalSelectionEnd: number;
+        placeholder: string;
+        placeholderRangeStart: number;
+        placeholderRangeEnd: number;
+        placeholderFoundAtCompletion: boolean;
+        placeholderReplaced: boolean;
+        selectionValidAtCompletion: boolean;
+        cleanupPerformed: boolean;
+        timeline: Array<{
+          phase: string;
+          textarea: string;
+          editor: string;
+          selectionStart: number;
+          selectionEnd: number;
+          placeholderFound: boolean;
+        }>;
+        inputEvents: number;
+        changeEvents: number;
+        uploadCompleted: boolean;
+        finalTargetValue: string;
+        finalEditorValue: string;
+      }> {
+        return page.evaluate(function getGithubLikeUploadState() {
+          const state = (
+            window as unknown as Window & {
+              githubImagePasteState: {
+                events: number;
+                trusted: boolean;
+                itemCount: number;
+                fileName: string;
+                defaultPrevented: boolean;
+                targetVisibleAtPaste: boolean;
+                targetFocusedAtPaste: boolean;
+                originalValue: string;
+                originalSelectionStart: number;
+                originalSelectionEnd: number;
+                placeholder: string;
+                placeholderRangeStart: number;
+                placeholderRangeEnd: number;
+                placeholderFoundAtCompletion: boolean;
+                placeholderReplaced: boolean;
+                selectionValidAtCompletion: boolean;
+                cleanupPerformed: boolean;
+                timeline: Array<{
+                  phase: string;
+                  textarea: string;
+                  editor: string;
+                  selectionStart: number;
+                  selectionEnd: number;
+                  placeholderFound: boolean;
+                }>;
+                inputEvents: number;
+                changeEvents: number;
+                uploadCompleted: boolean;
+                finalTargetValue: string;
+                finalEditorValue: string;
+              };
+            }
+          ).githubImagePasteState;
+          const target = document.querySelector<HTMLTextAreaElement>('#image-editor');
+          const editor = document.querySelector<HTMLElement>('[aria-label="TextareaVim editor"]');
+          state.finalTargetValue = target?.value ?? '';
+          const lines = editor?.shadowRoot?.querySelectorAll('.cm-line');
+          state.finalEditorValue = lines
+            ? Array.from(lines, function readLine(line): string {
+                return line.textContent ?? '';
+              }).join('\n')
+            : '';
+          return { ...state };
+        });
+      })
+      .toEqual({
+        events: 1,
+        trusted: true,
+        itemCount: 1,
+        fileName: 'image.png',
+        defaultPrevented: false,
+        targetVisibleAtPaste: true,
+        targetFocusedAtPaste: true,
+        originalValue: '',
+        originalSelectionStart: 0,
+        originalSelectionEnd: 0,
+        placeholder: '![Uploading... image.png (textarea-vim-unique)]()\n',
+        placeholderRangeStart: 0,
+        placeholderRangeEnd: '![Uploading... image.png (textarea-vim-unique)]()\n'.length,
+        placeholderFoundAtCompletion: true,
+        placeholderReplaced: true,
+        selectionValidAtCompletion: true,
+        cleanupPerformed: false,
+        timeline: [
+          {
+            phase: 'before',
+            textarea: '',
+            editor: '',
+            selectionStart: 0,
+            selectionEnd: 0,
+            placeholderFound: false,
+          },
+          {
+            phase: 'uploading-before-change',
+            textarea: '![Uploading... image.png (textarea-vim-unique)]()\n',
+            editor: '',
+            selectionStart: '![Uploading... image.png (textarea-vim-unique)]()\n'.length,
+            selectionEnd: '![Uploading... image.png (textarea-vim-unique)]()\n'.length,
+            placeholderFound: true,
+          },
+          {
+            phase: 'uploading',
+            textarea: '![Uploading... image.png (textarea-vim-unique)]()\n',
+            editor: '![Uploading... image.png (textarea-vim-unique)]()\n',
+            selectionStart: '![Uploading... image.png (textarea-vim-unique)]()\n'.length,
+            selectionEnd: '![Uploading... image.png (textarea-vim-unique)]()\n'.length,
+            placeholderFound: true,
+          },
+          {
+            phase: 'before-replace',
+            textarea: '![Uploading... image.png (textarea-vim-unique)]()\n',
+            editor: '![Uploading... image.png (textarea-vim-unique)]()\n',
+            selectionStart: '![Uploading... image.png (textarea-vim-unique)]()\n'.length,
+            selectionEnd: '![Uploading... image.png (textarea-vim-unique)]()\n'.length,
+            placeholderFound: true,
+          },
+          {
+            phase: 'complete',
+            textarea:
+              '<img width="5058" height="3372" src="https://github.com/user-attachments/assets/screenshot.png" />\n',
+            editor:
+              '<img width="5058" height="3372" src="https://github.com/user-attachments/assets/screenshot.png" />\n',
+            selectionStart:
+              '<img width="5058" height="3372" src="https://github.com/user-attachments/assets/screenshot.png" />\n'
+                .length,
+            selectionEnd:
+              '<img width="5058" height="3372" src="https://github.com/user-attachments/assets/screenshot.png" />\n'
+                .length,
+            placeholderFound: false,
+          },
+        ],
+        inputEvents: 0,
+        changeEvents: 2,
+        uploadCompleted: true,
+        finalTargetValue:
+          '<img width="5058" height="3372" src="https://github.com/user-attachments/assets/screenshot.png" />\n',
+        finalEditorValue:
+          '<img width="5058" height="3372" src="https://github.com/user-attachments/assets/screenshot.png" />\n',
+      });
+  } finally {
+    await closeBrowser(runningBrowser);
+  }
+});
+
+test('実際のクリップボード文字列をCodeMirrorへ同期する', async function testTrustedTextPasteFlow(): Promise<void> {
+  const extensionPath = path.resolve('.output/chrome-mv3');
+  let runningBrowser: RunningBrowser | undefined;
+
+  try {
+    runningBrowser = await launchBrowser();
+    await loadExtension(runningBrowser.browser, extensionPath);
+    await runningBrowser.context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+      origin: new URL(pageUrl).origin,
+    });
+    const page = await runningBrowser.context.newPage();
+    await page.goto(pageUrl);
+    await page.waitForLoadState('networkidle');
+
+    await page.evaluate(async function writeTextToClipboard(): Promise<void> {
+      await navigator.clipboard.writeText('pasted');
+    });
+
+    const textarea = page.locator('#editor');
+    await textarea.focus();
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toBeVisible();
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+V' : 'Control+V');
+
+    await expect(textarea).toHaveValue('pastedhello');
+    await expect(page.locator('[aria-label="TextareaVim editor"] .cm-content')).toContainText(
+      'pastedhello',
+    );
+  } finally {
+    await closeBrowser(runningBrowser);
+  }
+});
+
+test('inputとchangeの両通知で外部更新を一度だけ同期する', async function testInputAndChangeSync(): Promise<void> {
+  const extensionPath = path.resolve('.output/chrome-mv3');
+  let runningBrowser: RunningBrowser | undefined;
+
+  try {
+    runningBrowser = await launchBrowser();
+    await loadExtension(runningBrowser.browser, extensionPath);
+    const page = await runningBrowser.context.newPage();
+    await page.goto(pageUrl);
+    await page.waitForLoadState('networkidle');
+
+    const textarea = page.locator('#editor');
+    await textarea.focus();
+    await expect(page.locator('[aria-label="TextareaVim editor"]')).toBeVisible();
+    await page.evaluate(function dispatchExternalUpdate(): void {
+      const target = document.querySelector<HTMLTextAreaElement>('#editor');
+      if (!target) {
+        throw new Error('TextareaVim target was not rendered');
+      }
+      target.value = 'external update';
+      target.setSelectionRange(target.value.length, target.value.length);
+      target.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+    });
+
+    await expect(textarea).toHaveValue('external update');
+    await expect(page.locator('[aria-label="TextareaVim editor"] .cm-content')).toContainText(
+      'external update',
+    );
+    await expect
+      .poll(async function readExternalUpdateEventCounts(): Promise<{
+        input: number;
+        change: number;
+      }> {
+        return page.evaluate(function getEventCounts() {
+          const state = window as unknown as Window & { inputCount: number; changeCount: number };
+          return { input: state.inputCount, change: state.changeCount };
+        });
+      })
+      .toEqual({ input: 1, change: 1 });
+  } finally {
+    await closeBrowser(runningBrowser);
+  }
+});
+
+test('貼り付けイベントが発生しなくても一時フォーカスを解放する', async function testUnobservedPasteCleanup(): Promise<void> {
+  const extensionPath = path.resolve('.output/chrome-mv3');
+  let runningBrowser: RunningBrowser | undefined;
+
+  try {
+    runningBrowser = await launchBrowser();
+    await loadExtension(runningBrowser.browser, extensionPath);
+    const page = await runningBrowser.context.newPage();
+    await page.goto(pageUrl);
+    await page.waitForLoadState('networkidle');
+
+    const textarea = page.locator('#editor');
+    const overlay = page.locator('[aria-label="TextareaVim editor"]');
+    await textarea.focus();
+    await expect(overlay).toBeVisible();
+    await overlay.locator('.cm-content').dispatchEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      code: 'KeyV',
+      key: 'v',
+      ctrlKey: process.platform !== 'darwin',
+      metaKey: process.platform === 'darwin',
+    });
+    await overlay.locator('.cm-content').dispatchEvent('keyup', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      code: 'KeyV',
+      key: 'v',
+      ctrlKey: process.platform !== 'darwin',
+      metaKey: process.platform === 'darwin',
+    });
+
+    await expect
+      .poll(async function readFocusCleanupState(): Promise<{
+        visibility: string;
+        activeLabel: string | null;
+      }> {
+        return page.evaluate(function getFocusCleanupState() {
+          const target = document.querySelector<HTMLTextAreaElement>('#editor');
+          const activeElement = document.activeElement;
+          if (!target) {
+            throw new Error('TextareaVim target was not rendered');
+          }
+          return {
+            visibility: getComputedStyle(target).visibility,
+            activeLabel: activeElement?.getAttribute('aria-label') ?? null,
+          };
+        });
+      })
+      .toEqual({ visibility: 'hidden', activeLabel: 'TextareaVim editor' });
   } finally {
     await closeBrowser(runningBrowser);
   }

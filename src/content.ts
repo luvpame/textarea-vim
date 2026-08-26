@@ -17,6 +17,7 @@ import {
 import {
   dispatchTargetChange,
   dispatchTargetInput,
+  dispatchTargetPaste,
   findTarget,
   isSupportedTarget,
   readTargetSelection,
@@ -47,6 +48,7 @@ type Session = {
   previousVisibility: VisibilitySnapshot;
   syncing: boolean;
   closing: boolean;
+  nativePastePending: boolean;
   connectionObserver: MutationObserver;
   resizeObserver: ResizeObserver;
   view: EditorView | null;
@@ -325,6 +327,7 @@ function activate(target: HTMLTextAreaElement | null): void {
     previousVisibility,
     syncing: false,
     closing: false,
+    nativePastePending: false,
     connectionObserver: new MutationObserver(function observeTarget() {
       if (!target.isConnected) {
         closeSession({ restore: false });
@@ -376,6 +379,9 @@ function activate(target: HTMLTextAreaElement | null): void {
 
 function handleFocusIn(event: FocusEvent): void {
   const session = sessionState.session;
+  if (session?.nativePastePending && event.target === session.target) {
+    return;
+  }
   if (session && !isInsideSession(event, session) && event.target !== session.target) {
     closeSession({ restore: false });
   }
@@ -386,7 +392,7 @@ function handleFocusIn(event: FocusEvent): void {
   }
 }
 
-function handleTargetInput(event: Event): void {
+function handleTargetValueChange(event: Event): void {
   const session = sessionState.session;
   const view = session?.view;
   if (!session || !view || session.syncing || event.target !== session.target) {
@@ -395,8 +401,10 @@ function handleTargetInput(event: Event): void {
 
   const text = readTargetText(session.target);
   if (text !== view.state.doc.toString()) {
+    const selection = readTargetSelection(session.target, text);
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert: text },
+      selection: { anchor: selection.start, head: selection.end },
     });
   }
 }
@@ -411,12 +419,66 @@ function handleKeydown(event: KeyboardEvent): void {
     event.preventDefault();
     event.stopPropagation();
     closeSession({ restore: false });
+    return;
   }
+
+  if (isPasteShortcut(event)) {
+    session.nativePastePending = true;
+    session.target.style.setProperty('visibility', 'visible', 'important');
+    session.target.focus();
+    event.stopPropagation();
+  }
+}
+
+function isPasteShortcut(event: KeyboardEvent): boolean {
+  return (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v';
+}
+
+function handleKeyup(event: KeyboardEvent): void {
+  const session = sessionState.session;
+  if (!session?.nativePastePending || event.key.toLowerCase() !== 'v') {
+    return;
+  }
+
+  finishNativePaste(session);
 }
 
 function handlePointerDown(event: PointerEvent): void {
   if (sessionState.session && !isInsideSession(event, sessionState.session)) {
     closeSession({ restore: false });
+  }
+}
+
+function finishNativePaste(session: Session): void {
+  session.nativePastePending = false;
+  session.target.style.setProperty('visibility', 'hidden', 'important');
+  queueMicrotask(function restoreEditorFocus(): void {
+    if (sessionState.session === session && !session.closing) {
+      session.view?.focus();
+    }
+  });
+}
+
+function handlePaste(event: ClipboardEvent): void {
+  const session = sessionState.session;
+  if (session?.nativePastePending && event.target === session.target) {
+    setTimeout(function finishNativePasteAfterPageHandlers(): void {
+      if (sessionState.session === session && session.nativePastePending) {
+        finishNativePaste(session);
+      }
+    }, 0);
+    return;
+  }
+  if (session?.nativePastePending && isInsideSession(event, session)) {
+    finishNativePaste(session);
+  }
+  if (!session || !isInsideSession(event, session) || !event.clipboardData?.files.length) {
+    return;
+  }
+
+  if (dispatchTargetPaste(session.target, event)) {
+    event.preventDefault();
+    event.stopPropagation();
   }
 }
 
@@ -473,9 +535,12 @@ export async function initializeTextareaVim(context: ContentScriptContext): Prom
   }
   context.addEventListener(window, 'wxt:locationchange', handleLocationChange);
   context.addEventListener(document, 'focusin', handleFocusIn, { capture: true });
-  context.addEventListener(document, 'input', handleTargetInput, { capture: true });
+  context.addEventListener(document, 'input', handleTargetValueChange, { capture: true });
+  context.addEventListener(document, 'change', handleTargetValueChange, { capture: true });
   context.addEventListener(document, 'keydown', handleKeydown, { capture: true });
+  context.addEventListener(document, 'keyup', handleKeyup, { capture: true });
   context.addEventListener(document, 'pointerdown', handlePointerDown, { capture: true });
+  context.addEventListener(document, 'paste', handlePaste, { capture: true });
   context.addEventListener(window, 'scroll', handleScrollOrResize, { capture: true });
   context.addEventListener(window, 'resize', handleScrollOrResize);
 }

@@ -6,6 +6,7 @@ interface WindowLike {
     prototype: object;
   };
   Event?: typeof Event;
+  ClipboardEvent?: typeof ClipboardEvent;
 }
 
 function isElement(value: unknown): value is HTMLElement {
@@ -172,4 +173,27 @@ export function dispatchTargetInput(element: HTMLTextAreaElement): void {
 
 export function dispatchTargetChange(element: HTMLTextAreaElement): void {
   dispatchTargetEvent(element, 'change');
+}
+
+export function dispatchTargetPaste(element: HTMLTextAreaElement, source: ClipboardEvent): boolean {
+  const clipboardData = source.clipboardData;
+  if (!clipboardData) {
+    return false;
+  }
+
+  const windowObject = getWindow(element);
+  const ClipboardEventConstructor = windowObject.ClipboardEvent ?? globalThis.ClipboardEvent;
+  if (typeof ClipboardEventConstructor !== 'function') {
+    return false;
+  }
+
+  element.dispatchEvent(
+    new ClipboardEventConstructor('paste', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clipboardData,
+    }),
+  );
+  return true;
 }
