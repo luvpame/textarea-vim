@@ -5,28 +5,26 @@ import {
   updateOverlayPosition,
 } from '../src/overlay-position.js';
 
-let resizeCallback: ResizeObserverCallback | null = null;
-let observedTarget: Element | null = null;
-
-class FakeResizeObserver {
-  constructor(callback: ResizeObserverCallback) {
-    resizeCallback = callback;
-  }
-
-  disconnect(): void {}
-
-  observe(target: Element): void {
-    observedTarget = target;
-  }
-
-  unobserve(): void {}
-}
+let animationFrameCallback: FrameRequestCallback | null = null;
+let requestedFrameCount = 0;
+let cancelledFrameId: number | null = null;
 
 beforeEach(function resetDocument(): void {
   document.body.replaceChildren();
-  resizeCallback = null;
-  observedTarget = null;
-  vi.stubGlobal('ResizeObserver', FakeResizeObserver);
+  animationFrameCallback = null;
+  requestedFrameCount = 0;
+  cancelledFrameId = null;
+  vi.stubGlobal(
+    'requestAnimationFrame',
+    function captureAnimationFrame(callback: FrameRequestCallback): number {
+      animationFrameCallback = callback;
+      requestedFrameCount += 1;
+      return requestedFrameCount;
+    },
+  );
+  vi.stubGlobal('cancelAnimationFrame', function captureCancelledAnimationFrame(id: number): void {
+    cancelledFrameId = id;
+  });
 });
 
 test('textarea自身の高さが変わるとオーバーレイも追従する', function testOverlayFollowsTargetResize(): void {
@@ -40,9 +38,8 @@ test('textarea自身の高さが変わるとオーバーレイも追従する', 
   });
 
   observeOverlayPosition(target, host);
-  expect(observedTarget).toBe(target);
   height = 88;
-  resizeCallback?.([], {} as ResizeObserver);
+  animationFrameCallback?.(0);
 
   expect(host.style.left).toBe('12px');
   expect(host.style.top).toBe('24px');
@@ -67,4 +64,35 @@ test('inputでtextareaが伸びた直後にオーバーレイの高さも更新�
   dispatchTargetInputAndUpdateOverlay(target, host);
 
   expect(host.style.height).toBe('64px');
+});
+
+test('textareaが寸法を変えず横へ移動してもオーバーレイが追従する', function testOverlayFollowsHorizontalMovement(): void {
+  const target = document.createElement('textarea');
+  const host = document.createElement('div');
+  document.body.append(target, host);
+
+  let left = 12;
+  vi.spyOn(target, 'getBoundingClientRect').mockImplementation(function readTargetRectangle() {
+    return DOMRect.fromRect({ x: left, y: 24, width: 450, height: 88 });
+  });
+
+  updateOverlayPosition(target, host);
+  observeOverlayPosition(target, host);
+  left = 52;
+  animationFrameCallback?.(0);
+
+  expect(host.style.left).toBe('52px');
+});
+
+test('disconnectで次のフレームを停止する', function testDisconnectStopsAnimationFrame(): void {
+  const target = document.createElement('textarea');
+  const host = document.createElement('div');
+  document.body.append(target, host);
+
+  const observer = observeOverlayPosition(target, host);
+  observer.disconnect();
+  animationFrameCallback?.(0);
+
+  expect(cancelledFrameId).toBe(1);
+  expect(requestedFrameCount).toBe(1);
 });

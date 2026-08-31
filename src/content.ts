@@ -11,6 +11,7 @@ import {
 import { containKeyboardEvents } from './keyboard-boundary.js';
 import {
   dispatchTargetInputAndUpdateOverlay,
+  type OverlayPositionObserver,
   observeOverlayPosition,
   updateOverlayPosition,
 } from './overlay-position.js';
@@ -50,7 +51,7 @@ type Session = {
   closing: boolean;
   nativePastePending: boolean;
   connectionObserver: MutationObserver;
-  resizeObserver: ResizeObserver;
+  positionObserver: OverlayPositionObserver;
   view: EditorView | null;
 };
 
@@ -251,7 +252,7 @@ function closeSession(options: { restore?: boolean } = {}): void {
   }
 
   session.connectionObserver.disconnect();
-  session.resizeObserver.disconnect();
+  session.positionObserver.disconnect();
   session.view?.destroy();
   session.host.remove();
   if (session.target.isConnected) {
@@ -333,7 +334,7 @@ function activate(target: HTMLTextAreaElement | null): void {
         closeSession({ restore: false });
       }
     }),
-    resizeObserver: observeOverlayPosition(target, overlay.host),
+    positionObserver: observeOverlayPosition(target, overlay.host),
     view: null,
   };
 
